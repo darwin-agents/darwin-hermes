@@ -1,3 +1,10 @@
+"""
+config.py — Minimal settings for local dev / test runs.
+
+In production (Modal), all values come from env vars injected by
+modal_app.py and the Modal Secret. This file is only used outside Modal.
+"""
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
@@ -5,18 +12,8 @@ from pydantic import Field
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    darwin_id: str
-    session_id: str
-    agent_jwt: str
-    backend_url: str
-
-    # Injected via Modal Secret
-    redis_url: str = Field(default="redis://localhost:6379")
-    browserbase_api_key: str = Field(default="")
-    browserbase_project_id: str = Field(default="")
-    langsmith_api_key: str = Field(default="")
-    anthropic_api_key: str = Field(default="")
-    openai_api_key: str = Field(default="")
-
-    llm_model: str = Field(default="claude-sonnet-4-6")
+    darwin_id: str = Field(default="local-dev")
+    session_id: str = Field(default="local-session")
+    agent_jwt: str = Field(default="")
+    backend_url: str = Field(default="http://localhost:8000")
     vcc_ref: str = Field(default="")

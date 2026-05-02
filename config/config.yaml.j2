@@ -1,0 +1,98 @@
+# Darwin Agent — Hermes config (rendered per-session by modal_app.py)
+# Jinja2 template — variables injected from modal_app._render_config()
+
+# --- Primary model ---
+model:
+  provider: anthropic
+  default: claude-opus-4-7
+
+# --- Terminal backend: Modal sandboxes for every shell/file command ---
+terminal:
+  backend: modal
+  container_persistent: true
+  container_memory: 5120
+  container_disk: 51200
+  modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+
+# --- Browser backend: Browserbase stealth sessions ---
+browser:
+  backend: browserbase
+
+# --- Working memory ---
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+
+# --- Skill directories ---
+skills:
+  external_dirs:
+    - /root/darwin_skills   # bundled read-only starter skills
+
+# --- Context compression (episodic memory) ---
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
+auxiliary:
+  compression:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+
+# --- Subagent delegation (neurons) ---
+delegation:
+  max_concurrent_children: 3
+  max_spawn_depth: 1
+  orchestrator_enabled: true
+
+# --- Code execution (Programmatic Tool Calling) ---
+code_execution:
+  mode: project
+  timeout: 300
+  max_tool_calls: 50
+
+# --- Approval system ---
+approvals:
+  mode: smart
+  timeout: 60
+
+# --- Security ---
+security:
+  redact_secrets: true
+  tirith_enabled: true
+  tirith_fail_open: true
+  website_blocklist:
+    enabled: true
+    domains:
+      - "*.internal.darwin.ai"
+      - "metadata.google.internal"
+      - "169.254.169.254"
+
+# --- Agent iteration budget ---
+agent:
+  max_turns: 90
+  api_max_retries: 2
+  reasoning_effort: medium
+
+# --- Plugins ---
+plugins:
+  enabled:
+    - darwin               # our proprietary financial tools + hooks
+    - observability/langfuse  # Mental Replay — bundled in Hermes
+
+# --- Langfuse session grouping ---
+# Groups all traces for this Darwin under one project and tags each session
+# with darwin_id so the Mental Replay panel can filter by agent.
+langfuse:
+  project: "darwin-{{ darwin_id }}"
+  session_name: "{{ darwin_id }}::{{ session_id }}"
+  propagate_attributes: true
+  max_chars: 50000   # auto-truncate large read_file payloads in traces
+
+# --- Display (suppressed in Modal context) ---
+display:
+  tool_progress: "off"
+  streaming:
+    enabled: false
