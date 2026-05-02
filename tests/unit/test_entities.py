@@ -20,15 +20,8 @@ def tools(ctx):
     return {name: handler for name, (schema, handler) in ctx.tools.items()}
 
 
-@pytest.fixture
-def db(hermes_home_env):
-    conn = _get_db()
-    yield conn
-    conn.close()
-
-
 @pytest.mark.asyncio
-async def test_save_entity_writes_to_sqlite(tools, db, backend_mock):
+async def test_save_entity_writes_to_sqlite(tools, hermes_home_env, backend_mock):
     result = await tools["save_entity"]({
         "entity_type": "account",
         "entity_id": "acc-001",
@@ -36,7 +29,7 @@ async def test_save_entity_writes_to_sqlite(tools, db, backend_mock):
     })
     assert result["saved"] is True
 
-    row = db.execute(
+    row = _get_db().execute(
         "SELECT * FROM darwin_entities WHERE id = 'acc-001'"
     ).fetchone()
     assert row is not None
@@ -45,20 +38,20 @@ async def test_save_entity_writes_to_sqlite(tools, db, backend_mock):
 
 
 @pytest.mark.asyncio
-async def test_save_entity_marks_synced(tools, db, backend_mock):
+async def test_save_entity_marks_synced(tools, hermes_home_env, backend_mock):
     await tools["save_entity"]({
         "entity_type": "client",
         "entity_id": "client-001",
         "data": {"email": "buyer@example.com"},
     })
-    row = db.execute(
+    row = _get_db().execute(
         "SELECT synced_at FROM darwin_entities WHERE id = 'client-001'"
     ).fetchone()
     assert row[0] is not None
 
 
 @pytest.mark.asyncio
-async def test_save_entity_synced_false_on_backend_failure(tools, db, backend_mock):
+async def test_save_entity_synced_false_on_backend_failure(tools, hermes_home_env, backend_mock):
     import httpx
     backend_mock.post("/api/v1/telemetry/entity").mock(
         side_effect=httpx.ConnectError("backend down")
@@ -72,7 +65,7 @@ async def test_save_entity_synced_false_on_backend_failure(tools, db, backend_mo
     assert result["synced"] is False
     assert result["retry_on_next_session"] is True
 
-    row = db.execute(
+    row = _get_db().execute(
         "SELECT synced_at FROM darwin_entities WHERE id = 'prod-fail'"
     ).fetchone()
     # synced_at should be NULL since backend failed
@@ -80,7 +73,7 @@ async def test_save_entity_synced_false_on_backend_failure(tools, db, backend_mo
 
 
 @pytest.mark.asyncio
-async def test_save_entity_upsert_updates_data(tools, db, backend_mock):
+async def test_save_entity_upsert_updates_data(tools, hermes_home_env, backend_mock):
     await tools["save_entity"]({
         "entity_type": "strategy",
         "entity_id": "strat-001",
@@ -91,7 +84,7 @@ async def test_save_entity_upsert_updates_data(tools, db, backend_mock):
         "entity_id": "strat-001",
         "data": {"name": "dropship v2"},
     })
-    rows = db.execute(
+    rows = _get_db().execute(
         "SELECT data FROM darwin_entities WHERE id = 'strat-001'"
     ).fetchall()
     assert len(rows) == 1

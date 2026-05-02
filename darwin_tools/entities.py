@@ -117,5 +117,4 @@ async def _handle_save_entity(params: dict) -> dict:
         return {"saved": True, "synced": True}
     except Exception:
         return {"saved": True, "synced": False, "retry_on_next_session": True}
-    finally:
-        conn.close()
+    # No conn.close() — _conn is module-level and reused for the container's lifetime
