@@ -1,0 +1,14 @@
+## Working Memory — {{ darwin_id }}
+
+**Session:** {{ session_id }}
+**Balance:** ${{ balance }}
+**VCC:** {{ vcc_ref }}
+**Active deployments:** {{ active_deployments | default("None") }}
+
+### Why you woke up
+
+{{ wake_prompt }}
+
+### Last session summary
+
+{{ last_episodic_summary | default("This is your first session. No prior history.") }}
