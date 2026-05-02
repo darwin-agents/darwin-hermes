@@ -149,8 +149,8 @@ def backend_mock():
             return_value=httpx.Response(200, json={"sent": True, "message_id": "msg-1"})
         )
         # Hibernate
-        router.post(
-            respx.pattern.url_pattern("http://test-backend/api/v1/darwins/test-darwin-01/hibernate")
-        ).mock(return_value=httpx.Response(200, json={"ok": True}))
+        router.post("/api/v1/darwins/test-darwin-01/hibernate").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
 
         yield router

@@ -130,8 +130,8 @@ def build_memory_tools(settings, db, telemetry):
         Returns: List of matching transcript excerpts with timestamps
         """
         rows = db.conn.execute(
-            "SELECT * FROM hermes_sessions WHERE hermes_sessions MATCH ? ORDER BY rank LIMIT 5",
-            (query,)
+            "SELECT * FROM hermes_sessions WHERE transcript LIKE ? ORDER BY created_at DESC LIMIT 5",
+            (f"%{query}%",)
         ).fetchall()
         return [
             {

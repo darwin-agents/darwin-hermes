@@ -1,8 +1,10 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
     darwin_id: str
     session_id: str
     agent_jwt: str
@@ -18,7 +20,3 @@ class Settings(BaseSettings):
 
     llm_model: str = Field(default="claude-sonnet-4-6")
     vcc_ref: str = Field(default="")
-
-    class Config:
-        env_file = ".env"
-        extra = "ignore"

@@ -2,6 +2,74 @@ import httpx
 import time
 
 
+class BrowserbaseClient:
+    def __init__(self, api_key: str = "", project_id: str = ""):
+        self.api_key = api_key
+        self.project_id = project_id
+        self._base = "https://api.browserbase.com/v1"
+
+    async def fetch(self, url: str) -> dict:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{self._base}/fetch",
+                json={"url": url, "projectId": self.project_id},
+                headers={"X-BB-API-Key": self.api_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def create_session(self, url: str = None) -> dict:
+        body = {"projectId": self.project_id}
+        if url:
+            body["startUrl"] = url
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{self._base}/sessions",
+                json=body,
+                headers={"X-BB-API-Key": self.api_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def resume_session(self, session_id: str) -> dict:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{self._base}/sessions/{session_id}",
+                headers={"X-BB-API-Key": self.api_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def screenshot(self, session_id: str) -> bytes:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{self._base}/sessions/{session_id}/screenshot",
+                headers={"X-BB-API-Key": self.api_key},
+            )
+            resp.raise_for_status()
+            return resp.content
+
+    async def click(self, session_id: str, x: int, y: int) -> dict:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{self._base}/sessions/{session_id}/click",
+                json={"x": x, "y": y},
+                headers={"X-BB-API-Key": self.api_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def type(self, session_id: str, x: int, y: int, text: str) -> dict:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{self._base}/sessions/{session_id}/type",
+                json={"x": x, "y": y, "text": text},
+                headers={"X-BB-API-Key": self.api_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+
 def build_browser_tools(settings, db, telemetry):
     async def _backend_get(path: str, params: dict = None) -> dict:
         url = settings.backend_url.rstrip("/") + "/api/v1" + path
@@ -14,74 +82,10 @@ def build_browser_tools(settings, db, telemetry):
             resp.raise_for_status()
             return resp.json()
 
-    class BrowserbaseClient:
-        def __init__(self):
-            self.api_key = settings.browserbase_api_key
-            self.project_id = settings.browserbase_project_id
-            self._base = "https://api.browserbase.com/v1"
-
-        async def fetch(self, url: str) -> dict:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{self._base}/fetch",
-                    json={"url": url, "projectId": self.project_id},
-                    headers={"X-BB-API-Key": self.api_key},
-                )
-                resp.raise_for_status()
-                return resp.json()
-
-        async def create_session(self, url: str = None) -> dict:
-            body = {"projectId": self.project_id}
-            if url:
-                body["startUrl"] = url
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{self._base}/sessions",
-                    json=body,
-                    headers={"X-BB-API-Key": self.api_key},
-                )
-                resp.raise_for_status()
-                return resp.json()
-
-        async def resume_session(self, session_id: str) -> dict:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(
-                    f"{self._base}/sessions/{session_id}",
-                    headers={"X-BB-API-Key": self.api_key},
-                )
-                resp.raise_for_status()
-                return resp.json()
-
-        async def screenshot(self, session_id: str) -> bytes:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(
-                    f"{self._base}/sessions/{session_id}/screenshot",
-                    headers={"X-BB-API-Key": self.api_key},
-                )
-                resp.raise_for_status()
-                return resp.content
-
-        async def click(self, session_id: str, x: int, y: int) -> dict:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{self._base}/sessions/{session_id}/click",
-                    json={"x": x, "y": y},
-                    headers={"X-BB-API-Key": self.api_key},
-                )
-                resp.raise_for_status()
-                return resp.json()
-
-        async def type(self, session_id: str, x: int, y: int, text: str) -> dict:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{self._base}/sessions/{session_id}/type",
-                    json={"x": x, "y": y, "text": text},
-                    headers={"X-BB-API-Key": self.api_key},
-                )
-                resp.raise_for_status()
-                return resp.json()
-
-    _bb = BrowserbaseClient()
+    _bb = BrowserbaseClient(
+        api_key=settings.browserbase_api_key,
+        project_id=settings.browserbase_project_id,
+    )
 
     async def browser_fetch(url: str) -> str:
         """

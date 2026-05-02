@@ -92,11 +92,8 @@ async def test_hibernate_with_webhook_key(settings, db, telemetry):
 async def test_check_kill_signal_returns_false_when_no_key(settings, db, telemetry, monkeypatch):
     fake_redis = fakeredis.aioredis.FakeRedis()
 
-    async def fake_from_url(url):
-        return fake_redis
-
     import redis.asyncio as aioredis
-    monkeypatch.setattr(aioredis, "from_url", fake_from_url)
+    monkeypatch.setattr(aioredis, "from_url", lambda url: fake_redis)
 
     [_, check_kill_signal] = build_lifecycle_tools(settings, db, telemetry)
     result = await check_kill_signal()
@@ -108,11 +105,8 @@ async def test_check_kill_signal_returns_true_when_key_present(settings, db, tel
     fake_redis = fakeredis.aioredis.FakeRedis()
     await fake_redis.set(f"kill:{settings.darwin_id}", "1")
 
-    async def fake_from_url(url):
-        return fake_redis
-
     import redis.asyncio as aioredis
-    monkeypatch.setattr(aioredis, "from_url", fake_from_url)
+    monkeypatch.setattr(aioredis, "from_url", lambda url: fake_redis)
 
     [_, check_kill_signal] = build_lifecycle_tools(settings, db, telemetry)
     result = await check_kill_signal()
