@@ -1,156 +1,95 @@
 """
-Shared fixtures for the darwin-agent test suite.
+Shared fixtures for the darwin-agent plugin test suite.
 
-All fixtures use in-memory SQLite, fakeredis, and respx for httpx mocking
-so no real network calls or file-system side effects occur during tests.
+All tests mock the God Layer HTTP calls via respx and mock the Hermes ctx
+object to verify tool + hook registration without needing the real runtime.
 """
-import asyncio
+
+import os
 import pytest
 import respx
 import httpx
 
-from config import Settings
-from db.client import SQLiteClient
-from telemetry.client import TelemetryClient
+# Point darwin_tools at a temp HERMES_HOME so darwin_entities table is isolated
+@pytest.fixture(autouse=True)
+def hermes_home_env(tmp_path):
+    os.environ["HERMES_HOME"] = str(tmp_path)
+    os.environ["DARWIN_ID"] = "test-darwin-01"
+    os.environ["DARWIN_SESSION_ID"] = "test-session-01"
+    os.environ["DARWIN_AGENT_JWT"] = "test-jwt"
+    os.environ["DARWIN_BACKEND_URL"] = "http://test-backend"
+    os.environ["DARWIN_VCC_REF"] = "vcc_ref_test"
+    yield
+    # Reset singletons between tests
+    import darwin_tools.backend_client as bc
+    bc._client = None
+    import darwin_tools.entities as ent
+    if ent._conn is not None:
+        ent._conn.close()
+        ent._conn = None
 
-
-# ---------------------------------------------------------------------------
-# Settings
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def settings():
-    return Settings(
-        darwin_id="test-darwin-01",
-        session_id="test-session-01",
-        agent_jwt="test-jwt",
-        backend_url="http://test-backend",
-        redis_url="redis://localhost:6379",
-        vcc_ref="vcc_ref_test",
-        llm_model="claude-sonnet-4-6",
-    )
-
-
-# ---------------------------------------------------------------------------
-# In-memory SQLite database
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def db(tmp_path):
-    """Fresh SQLiteClient backed by a real on-disk temp file (not :memory:)
-    so FTS5 virtual tables work correctly."""
-    client = SQLiteClient(str(tmp_path / "test_hermes.db"))
-    yield client
-    client.close()
-
-
-# ---------------------------------------------------------------------------
-# Telemetry client (records all events in memory — no HTTP)
-# ---------------------------------------------------------------------------
-
-class FakeTelemetry:
-    def __init__(self):
-        self.events: list[dict] = []
-        self.metrics: list[dict] = []
-        self.entities: list[dict] = []
-
-    async def push_event(self, event_type, payload, **kwargs):
-        self.events.append({"event_type": event_type, "payload": payload, **kwargs})
-        return f"fake-event-{len(self.events)}"
-
-    async def push_metrics(self, metrics):
-        self.metrics.append(metrics)
-
-    async def push_entity(self, entity_type, entity_id, data, operation):
-        self.entities.append({
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "data": data,
-            "operation": operation,
-        })
-
-    async def close(self):
-        pass
-
-
-@pytest.fixture
-def telemetry():
-    return FakeTelemetry()
-
-
-# ---------------------------------------------------------------------------
-# respx router — intercepts all httpx calls to the fake backend
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def backend_mock():
-    """
-    Activate an respx router that intercepts calls to http://test-backend.
-    Tests customise individual routes via backend_mock.get(...) / .post(...).
-    """
     with respx.mock(base_url="http://test-backend", assert_all_called=False) as router:
-        # Finance defaults
         router.get("/api/v1/finance/ledger/test-darwin-01").mock(
             return_value=httpx.Response(200, json={
                 "current_balance": 80.00,
                 "initial_budget": 100.00,
-                "transactions": [
-                    {"id": "tx1", "amount": -20.00, "description": "test spend"},
-                ],
+                "transactions": [{"id": "tx1", "amount": -20.00}],
             })
         )
         router.post("/api/v1/finance/ledger/update").mock(
-            return_value=httpx.Response(200, json={
-                "new_balance": 67.01,
-                "transaction_id": "tx-new",
-            })
+            return_value=httpx.Response(200, json={"new_balance": 67.01, "transaction_id": "tx-new"})
         )
         router.post("/api/v1/finance/inject-payment").mock(
             return_value=httpx.Response(200, json={"injected": True})
         )
-        # Notifications
+        router.post("/api/v1/audit/log").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
         router.post("/api/v1/notifications/send").mock(
             return_value=httpx.Response(200, json={"ok": True})
         )
-        # Telemetry
         router.post("/api/v1/telemetry/entity").mock(
             return_value=httpx.Response(200, json={"ok": True})
         )
         router.post("/api/v1/telemetry/stream-event").mock(
-            return_value=httpx.Response(200, json={"event_id": "ev-123"})
+            return_value=httpx.Response(200, json={"event_id": "ev-1"})
         )
-        # Memory
-        router.post("/api/v1/memory/upload").mock(
-            return_value=httpx.Response(200, json={"ok": True})
+        router.post("/api/v1/telemetry/stream").mock(
+            return_value=httpx.Response(202, json={"queued": True})
         )
-        router.post("/api/v1/memory/query").mock(
-            return_value=httpx.Response(200, json={"skills": []})
-        )
-        # Assets
         router.get("/api/v1/assets/presigned-url").mock(
             return_value=httpx.Response(200, json={
                 "upload_url": "http://storage/upload",
-                "public_url": "http://storage/file.jpg",
-                "asset_id": "asset-123",
+                "public_url": "http://storage/file.pdf",
+                "asset_id": "asset-1",
             })
         )
-        router.put("http://storage/upload").mock(
-            return_value=httpx.Response(200)
-        )
+        router.put("http://storage/upload").mock(return_value=httpx.Response(200))
         router.post("/api/v1/assets/index").mock(
             return_value=httpx.Response(200, json={"ok": True})
         )
-        # Audit
-        router.post("/api/v1/audit/log").mock(
-            return_value=httpx.Response(200, json={"ok": True})
-        )
-        # Comms
         router.post("/api/v1/comms/send-email").mock(
             return_value=httpx.Response(200, json={"sent": True, "message_id": "msg-1"})
         )
-        # Hibernate
-        router.post("/api/v1/darwins/test-darwin-01/hibernate").mock(
-            return_value=httpx.Response(200, json={"ok": True})
-        )
-
         yield router
+
+
+class FakeCtx:
+    """Minimal mock of the Hermes plugin context."""
+    def __init__(self):
+        self.tools: dict[str, tuple] = {}
+        self.hooks: dict[str, list] = {}
+
+    def register_tool(self, name: str, schema: dict, handler) -> None:
+        self.tools[name] = (schema, handler)
+
+    def register_hook(self, event: str, handler) -> None:
+        self.hooks.setdefault(event, []).append(handler)
+
+
+@pytest.fixture
+def ctx():
+    return FakeCtx()

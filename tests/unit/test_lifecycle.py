@@ -1,24 +1,31 @@
 """
 Unit tests for darwin_tools/lifecycle.py
 
-Invariants checked:
-- hibernate() always raises HibernateSignal, never returns
-- HibernateSignal carries all fields passed by the caller
-- check_kill_signal() returns False when no key is present
-- check_kill_signal() returns True when kill:{darwin_id} key exists in Redis
+Invariants:
+- hibernate() always raises DarwinHibernateSignal with correct fields
+- request_approval returns a webhook_key and sends a notification
 """
+
 import pytest
-import fakeredis.aioredis
 
-from darwin_tools.lifecycle import HibernateSignal, build_lifecycle_tools
+from darwin_tools.lifecycle import (
+    DarwinHibernateSignal,
+    register_lifecycle_tools,
+)
+
+
+@pytest.fixture
+def tools(ctx):
+    register_lifecycle_tools(ctx)
+    return {name: handler for name, (schema, handler) in ctx.tools.items()}
 
 
 # ---------------------------------------------------------------------------
-# HibernateSignal construction
+# DarwinHibernateSignal construction
 # ---------------------------------------------------------------------------
 
-def test_hibernate_signal_stores_all_fields():
-    sig = HibernateSignal(
+def test_signal_stores_fields():
+    sig = DarwinHibernateSignal(
         reason="waiting for stripe",
         wake_after_hours=2.5,
         wake_on_webhook="wh_abc",
@@ -30,84 +37,73 @@ def test_hibernate_signal_stores_all_fields():
     assert sig.keep_browser_session == "sess_xyz"
 
 
-def test_hibernate_signal_optional_fields_default_none():
-    sig = HibernateSignal(reason="idle")
+def test_signal_optional_fields_default_none():
+    sig = DarwinHibernateSignal(reason="idle")
     assert sig.wake_after_hours is None
     assert sig.wake_on_webhook is None
     assert sig.keep_browser_session is None
 
 
 # ---------------------------------------------------------------------------
-# hibernate() tool
+# hibernate tool
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_hibernate_raises_signal(settings, db, telemetry):
-    [hibernate, _] = build_lifecycle_tools(settings, db, telemetry)
-
-    with pytest.raises(HibernateSignal) as exc_info:
-        await hibernate(reason="test shutdown", wake_after_hours=1.0)
-
-    sig = exc_info.value
-    assert sig.reason == "test shutdown"
-    assert sig.wake_after_hours == 1.0
-    assert sig.wake_on_webhook is None
+async def test_hibernate_raises_signal(tools):
+    with pytest.raises(DarwinHibernateSignal) as exc_info:
+        await tools["hibernate"]({"reason": "test", "wake_after_hours": 1.0})
+    assert exc_info.value.reason == "test"
+    assert exc_info.value.wake_after_hours == 1.0
 
 
 @pytest.mark.asyncio
-async def test_hibernate_never_returns(settings, db, telemetry):
-    [hibernate, _] = build_lifecycle_tools(settings, db, telemetry)
-
+async def test_hibernate_never_returns(tools):
     raised = False
     try:
-        await hibernate(reason="test")
-    except HibernateSignal:
+        await tools["hibernate"]({"reason": "test"})
+    except DarwinHibernateSignal:
         raised = True
-
-    assert raised, "hibernate() must always raise HibernateSignal"
+    assert raised
 
 
 @pytest.mark.asyncio
-async def test_hibernate_with_webhook_key(settings, db, telemetry):
-    [hibernate, _] = build_lifecycle_tools(settings, db, telemetry)
-
-    with pytest.raises(HibernateSignal) as exc_info:
-        await hibernate(
-            reason="waiting for email",
-            wake_on_webhook="hook_email_123",
-            keep_browser_session="bb_sess_456",
-        )
-
+async def test_hibernate_with_webhook(tools):
+    with pytest.raises(DarwinHibernateSignal) as exc_info:
+        await tools["hibernate"]({
+            "reason": "waiting for email",
+            "wake_on_webhook": "hook_123",
+            "keep_browser_session": "bb_456",
+        })
     sig = exc_info.value
-    assert sig.wake_on_webhook == "hook_email_123"
-    assert sig.keep_browser_session == "bb_sess_456"
+    assert sig.wake_on_webhook == "hook_123"
+    assert sig.keep_browser_session == "bb_456"
     assert sig.wake_after_hours is None
 
 
 # ---------------------------------------------------------------------------
-# check_kill_signal()
+# request_approval
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_check_kill_signal_returns_false_when_no_key(settings, db, telemetry, monkeypatch):
-    fake_redis = fakeredis.aioredis.FakeRedis()
-
-    import redis.asyncio as aioredis
-    monkeypatch.setattr(aioredis, "from_url", lambda url: fake_redis)
-
-    [_, check_kill_signal] = build_lifecycle_tools(settings, db, telemetry)
-    result = await check_kill_signal()
-    assert result is False
+async def test_request_approval_returns_webhook_key(tools, backend_mock):
+    result = await tools["request_approval"]({
+        "amount": 50.00,
+        "justification": "Facebook ads for pet niche — expected 300% ROI",
+    })
+    assert "webhook_key" in result
+    assert result["webhook_key"].startswith("approval_test-darwin-01_")
 
 
 @pytest.mark.asyncio
-async def test_check_kill_signal_returns_true_when_key_present(settings, db, telemetry, monkeypatch):
-    fake_redis = fakeredis.aioredis.FakeRedis()
-    await fake_redis.set(f"kill:{settings.darwin_id}", "1")
+async def test_request_approval_posts_notification(tools, backend_mock):
+    import json
+    sent = []
+    async def capture(request, route):
+        sent.append(json.loads(request.content))
+        return __import__("httpx").Response(200, json={"ok": True})
+    backend_mock.post("/api/v1/notifications/send").mock(side_effect=capture)
 
-    import redis.asyncio as aioredis
-    monkeypatch.setattr(aioredis, "from_url", lambda url: fake_redis)
-
-    [_, check_kill_signal] = build_lifecycle_tools(settings, db, telemetry)
-    result = await check_kill_signal()
-    assert result is True
+    await tools["request_approval"]({"amount": 25.00, "justification": "test"})
+    assert len(sent) == 1
+    assert "25.00" in sent[0]["message"]
+    assert sent[0]["action_type"] == "APPROVAL"

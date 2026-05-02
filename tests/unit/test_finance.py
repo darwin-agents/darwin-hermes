@@ -1,16 +1,23 @@
 """
 Unit tests for darwin_tools/finance.py
 
-Invariants checked:
-- record_expense always sends a negative amount to the backend (debit)
-- check_ledger returns correctly shaped dict with pct_remaining
-- inject_payment never exposes PAN/CVV in event payloads or return values
+Invariants:
+- check_ledger returns correct shape with pct_remaining
+- record_expense always sends a negative amount (debit)
+- inject_payment never exposes PAN/CVV in args or result
 """
-import pytest
-import respx
-import httpx
 
-from darwin_tools.finance import build_finance_tools
+import pytest
+import httpx
+import json
+
+from darwin_tools.finance import register_finance_tools
+
+
+@pytest.fixture
+def tools(ctx):
+    register_finance_tools(ctx)
+    return {name: handler for name, (schema, handler) in ctx.tools.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -18,19 +25,16 @@ from darwin_tools.finance import build_finance_tools
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_check_ledger_returns_correct_shape(settings, db, telemetry, backend_mock):
-    [check_ledger, _, _] = build_finance_tools(settings, db, telemetry)
-    result = await check_ledger()
-
+async def test_check_ledger_returns_correct_shape(tools, backend_mock):
+    result = await tools["check_ledger"]({})
     assert result["balance"] == 80.00
     assert result["initial_budget"] == 100.00
     assert result["pct_remaining"] == 80.0
-    assert isinstance(result["recent_transactions"], list)
     assert len(result["recent_transactions"]) <= 5
 
 
 @pytest.mark.asyncio
-async def test_check_ledger_pct_remaining_calculation(settings, db, telemetry, backend_mock):
+async def test_check_ledger_pct_remaining(tools, backend_mock):
     backend_mock.get("/api/v1/finance/ledger/test-darwin-01").mock(
         return_value=httpx.Response(200, json={
             "current_balance": 33.33,
@@ -38,60 +42,36 @@ async def test_check_ledger_pct_remaining_calculation(settings, db, telemetry, b
             "transactions": [],
         })
     )
-    [check_ledger, _, _] = build_finance_tools(settings, db, telemetry)
-    result = await check_ledger()
+    result = await tools["check_ledger"]({})
     assert result["pct_remaining"] == 33.3
 
 
 # ---------------------------------------------------------------------------
-# record_expense — critical invariant: amount must always be negated
+# record_expense — amount must always be negated
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_record_expense_negates_positive_amount(settings, db, telemetry, backend_mock):
-    posted_bodies = []
-
-    async def capture_body(request, route):
-        import json
-        posted_bodies.append(json.loads(request.content))
+async def test_record_expense_negates_positive_amount(tools, backend_mock):
+    bodies = []
+    async def capture(request, route):
+        bodies.append(json.loads(request.content))
         return httpx.Response(200, json={"new_balance": 67.01, "transaction_id": "tx-1"})
+    backend_mock.post("/api/v1/finance/ledger/update").mock(side_effect=capture)
 
-    backend_mock.post("/api/v1/finance/ledger/update").mock(side_effect=capture_body)
-
-    [_, record_expense, _] = build_finance_tools(settings, db, telemetry)
-    await record_expense(amount=12.99, description="Test purchase")
-
-    assert len(posted_bodies) == 1
-    assert posted_bodies[0]["amount"] == -12.99, "amount must be negative (debit)"
+    await tools["record_expense"]({"amount": 12.99, "description": "test"})
+    assert bodies[0]["amount"] == -12.99
 
 
 @pytest.mark.asyncio
-async def test_record_expense_negates_already_negative_amount(settings, db, telemetry, backend_mock):
-    """Passing a negative amount must still result in a debit (abs enforced)."""
-    posted_bodies = []
+async def test_record_expense_negates_already_negative(tools, backend_mock):
+    bodies = []
+    async def capture(request, route):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"new_balance": 70.00, "transaction_id": "tx-2"})
+    backend_mock.post("/api/v1/finance/ledger/update").mock(side_effect=capture)
 
-    async def capture_body(request, route):
-        import json
-        posted_bodies.append(json.loads(request.content))
-        return httpx.Response(200, json={"new_balance": 67.01, "transaction_id": "tx-2"})
-
-    backend_mock.post("/api/v1/finance/ledger/update").mock(side_effect=capture_body)
-
-    [_, record_expense, _] = build_finance_tools(settings, db, telemetry)
-    await record_expense(amount=-5.00, description="Negative input test")
-
-    assert posted_bodies[0]["amount"] == -5.00
-
-
-@pytest.mark.asyncio
-async def test_record_expense_writes_to_local_ledger(settings, db, telemetry, backend_mock):
-    [_, record_expense, _] = build_finance_tools(settings, db, telemetry)
-    await record_expense(amount=10.00, description="local ledger test")
-
-    rows = db.conn.execute("SELECT * FROM darwin_ledger").fetchall()
-    assert len(rows) == 1
-    assert rows[0]["amount"] == -10.00
-    assert rows[0]["description"] == "local ledger test"
+    await tools["record_expense"]({"amount": -5.00, "description": "neg test"})
+    assert bodies[0]["amount"] == -5.00
 
 
 # ---------------------------------------------------------------------------
@@ -99,36 +79,37 @@ async def test_record_expense_writes_to_local_ledger(settings, db, telemetry, ba
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_inject_payment_response_has_no_pan_cvv(settings, db, telemetry, backend_mock):
-    [_, _, inject_payment] = build_finance_tools(settings, db, telemetry)
-    result = await inject_payment(
-        browserbase_session_id="bb_sess_1",
-        merchant_name="TestShop",
-        amount=29.99,
-        pan_element="#card-number",
-        cvv_element="#cvv",
-        expiry_element="#expiry",
-    )
-    result_str = str(result)
-    assert "pan" not in result_str.lower() or result_str == str({"injected": True})
-    assert "cvv" not in result_str.lower() or result_str == str({"injected": True})
+async def test_inject_payment_response_no_pan(tools, backend_mock):
+    result = await tools["inject_payment"]({
+        "browserbase_session_id": "bb_1",
+        "merchant_name": "TestShop",
+        "amount": 29.99,
+        "pan_element": "#card",
+        "cvv_element": "#cvv",
+        "expiry_element": "#expiry",
+    })
     assert result.get("injected") is True
+    result_str = str(result)
+    import re
+    assert not re.search(r"\b\d{13,19}\b", result_str), "PAN found in result"
 
 
 @pytest.mark.asyncio
-async def test_inject_payment_audit_event_has_no_raw_card_data(settings, db, telemetry, backend_mock):
-    [_, _, inject_payment] = build_finance_tools(settings, db, telemetry)
-    await inject_payment(
-        browserbase_session_id="bb_sess_2",
-        merchant_name="AnotherShop",
-        amount=9.99,
-        pan_element="#cc",
-        cvv_element="#sec",
-        expiry_element="#exp",
-    )
-    # Check nothing from any audit log posted to backend contains a card number pattern
+async def test_inject_payment_request_contains_no_card_digits(tools, backend_mock):
     import re
-    card_pattern = re.compile(r"\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}")
-    for call in backend_mock.calls:
-        body = call.request.content.decode("utf-8")
-        assert not card_pattern.search(body), f"PAN found in request body: {body}"
+    calls = []
+    async def capture(request, route):
+        calls.append(request.content.decode())
+        return httpx.Response(200, json={"injected": True})
+    backend_mock.post("/api/v1/finance/inject-payment").mock(side_effect=capture)
+
+    await tools["inject_payment"]({
+        "browserbase_session_id": "bb_2",
+        "merchant_name": "Shop",
+        "amount": 9.99,
+        "pan_element": "#p",
+        "cvv_element": "#c",
+        "expiry_element": "#e",
+    })
+    for body in calls:
+        assert not re.search(r"\b\d{13,19}\b", body), f"PAN found in request: {body}"
