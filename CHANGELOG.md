@@ -11,6 +11,27 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.1] — 2026-05-02
+
+Targeted improvements following post-refactor review.
+
+### Added
+
+- `tests/unit/test_audit_comms_files.py` — unit tests for `log_decision`, `send_email`, `upload_file` (7 tests; previous suite had no coverage for these three tools)
+- `tests/integration/test_hibernate_flow.py` — end-to-end integration tests: full session lifecycle, approval→hibernate flow, JWT revocation kill signal, smoke check of all 9 tools
+
+### Changed
+
+- `modal_app.py` — `run_agent()` now accepts `vcc_ref` as a spawn-time argument. VCC is per-Darwin; it was wrong to assume it comes from a static Modal Secret.
+- `darwin_tools/pnl_hooks._post_llm_call` — now posts to `/telemetry/llm-call` (per-call cost record for Token ROI dashboard + Mental Replay) **and** `/telemetry/stream` (rolling burn-rate chart). Previously only used the metrics stream, so individual LLM call costs were invisible.
+- `darwin_tools/pnl_hooks` — added `_model_to_provider()` helper; `provider` field now included in every `/telemetry/llm-call` payload.
+- `darwin_tools/backend_client` — added `_check_revocation()`: any `401`/`403` from the God Layer raises `SystemExit`, triggering `volume.commit()` before the container dies. This is the v0.1 kill-signal mechanism (JWT revocation), replacing the old Redis poll.
+- `darwin_tools/entities` — `_conn` is now a module-level cached singleton instead of opening a new `sqlite3.connect()` on every `save_entity` call.
+- `config/config.yaml.j2` — added `langfuse.project`, `langfuse.session_name` (tagged with `darwin_id::session_id`), and `langfuse.propagate_attributes: true` so the Mental Replay panel groups traces per agent.
+- `.gitignore` — added `config/config.yaml` (the rendered per-session output) and `*.egg-info/`.
+
+---
+
 ## [0.2.0] — 2026-05-02
 
 Major architecture correction following a deep audit of Hermes Agent's actual capabilities. The previous implementation was re-building from scratch what Hermes already ships natively. This release aligns the codebase with the v0.1 engineering spec.
