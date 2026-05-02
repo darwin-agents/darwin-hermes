@@ -1,29 +1,55 @@
-import json
-import modal
+"""
+darwin-agent — Modal entrypoint
 
-from config import Settings
-from db.client import SQLiteClient
-from darwin_tools import ALL_TOOLS
-from darwin_tools.lifecycle import HibernateSignal
-from darwin_tools.memory import compress_session_to_episodic
-from telemetry.client import TelemetryClient
-from telemetry.heartbeat import HeartbeatThread
-from tracing.langsmith import configure_tracing
+Boot sequence:
+  1. Mount Modal Volume at /data — $HERMES_HOME = /data/hermes_home
+  2. Copy SOUL.md to $HERMES_HOME if not present (preserves agent-edited overrides)
+  3. Render config.yaml from the Jinja2 template (picks up per-session model, backends)
+  4. Set per-session env vars so darwin_tools can find the backend + JWT
+  5. Hand off to Hermes' python_library.run_session()
+     → Hermes discovers our plugin via entry points, calls register(ctx)
+     → Tools, hooks, slash commands all wire up automatically
+     → SOUL.md + MEMORY.md + USER.md build the system prompt
+     → on_session_start hook fires → AGENT_WOKE canvas event
+     → wake_prompt is fed as the user message
+     → Agent runs until hibernate() is called or the 900s timeout fires
+
+On DarwinHibernateSignal:
+  1. Sync any unsynced darwin_entities to the backend
+  2. Register wake trigger (CRON or WEBHOOK) with the God Layer
+  3. Push AGENT_HIBERNATED canvas event
+  4. volume.commit() in the outer finally block persists $HERMES_HOME durably
+"""
+
+from __future__ import annotations
+
+import os
+import modal
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Modal image
+# ---------------------------------------------------------------------------
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install(["git", "curl"])
+    .apt_install(["git", "curl", "ripgrep", "ffmpeg"])
     .run_commands("curl -Ls https://astral.sh/uv/install.sh | sh")
-    .env({"PATH": "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"})
-    .copy_local_file("pyproject.toml", "/root/pyproject.toml")
-    .run_commands("uv pip install --system -r /root/pyproject.toml")
+    .env({"PATH": "/root/.local/bin:/usr/local/bin:/usr/bin:/bin"})
+    .copy_local_dir("hermes-core",    "/root/hermes-core")
+    .copy_local_dir("darwin_tools",   "/root/darwin_tools")
+    .copy_local_dir("darwin_skills",  "/root/darwin_skills")
+    .copy_local_file("prompts/SOUL.md",           "/root/SOUL.md")
+    .copy_local_file("config/config.yaml.j2",     "/root/config.yaml.j2")
+    .copy_local_file("pyproject.toml",            "/root/pyproject.toml")
     .run_commands(
-        "git clone https://github.com/NousResearch/hermes-function-calling /root/hermes-core",
-        "uv pip install --system -e /root/hermes-core",
+        "uv pip install --system -e /root/hermes-core[all]",
+        "uv pip install --system -e /root",   # registers darwin_tools entry point
     )
     .env({
         "PYTHONUNBUFFERED": "1",
-        "LANGCHAIN_TRACING_V2": "true",
+        "HERMES_HOME": "/data/hermes_home",
     })
 )
 
@@ -31,8 +57,13 @@ app = modal.App("darwin-agent", image=image)
 
 
 def get_volume(darwin_id: str) -> modal.Volume:
+    """One persistent Modal Volume per Darwin — mounts at /data on every boot."""
     return modal.Volume.from_name(f"darwin-{darwin_id}", create_if_missing=True)
 
+
+# ---------------------------------------------------------------------------
+# Main entrypoint
+# ---------------------------------------------------------------------------
 
 @app.function(
     timeout=900,
@@ -46,13 +77,15 @@ def run_agent(
     wake_prompt: str,
     agent_jwt: str,
     backend_url: str,
+    vcc_ref: str = "",
 ):
     """
-    The main agent entrypoint. Called by Modal when the backend spawns or wakes
-    an agent. Everything that happens during one active session lives here.
+    Boot sequence. Called by the God Layer on spawn or wake-up.
+    vcc_ref is the per-Darwin opaque token for VCC injection — never the raw PAN.
+    Modal mounts the Volume → we bootstrap env → Hermes takes over.
     """
     import asyncio
-    asyncio.run(_run_agent_async(darwin_id, session_id, wake_prompt, agent_jwt, backend_url))
+    asyncio.run(_run_agent_async(darwin_id, session_id, wake_prompt, agent_jwt, backend_url, vcc_ref))
 
 
 async def _run_agent_async(
@@ -61,167 +94,165 @@ async def _run_agent_async(
     wake_prompt: str,
     agent_jwt: str,
     backend_url: str,
-):
-    settings = Settings(
-        darwin_id=darwin_id,
-        session_id=session_id,
-        agent_jwt=agent_jwt,
-        backend_url=backend_url,
-    )
-
-    configure_tracing(darwin_id=darwin_id, session_id=session_id)
-
+    vcc_ref: str = "",
+) -> None:
     volume = get_volume(darwin_id)
-    with volume.mount("/data/agent_memory"):
-        db = SQLiteClient("/data/agent_memory/hermes.db")
-        db.run_pending_migrations()
+    with volume.mount("/data"):
+        hermes_home = Path("/data/hermes_home")
+        hermes_home.mkdir(parents=True, exist_ok=True)
 
-        telemetry = TelemetryClient(
-            backend_url=backend_url,
-            agent_jwt=agent_jwt,
-            darwin_id=darwin_id,
-            session_id=session_id,
-        )
+        # 1. Copy SOUL.md only if not already present
+        #    (preserve any identity edits the agent made in a previous session)
+        soul_path = hermes_home / "SOUL.md"
+        if not soul_path.exists():
+            soul_path.write_text(Path("/root/SOUL.md").read_text())
 
-        heartbeat = HeartbeatThread(
-            darwin_id=darwin_id,
-            agent_jwt=agent_jwt,
-            backend_url=backend_url,
-            telemetry=telemetry,
-        )
-        heartbeat.start()
+        # 2. Render config.yaml from the Jinja2 template
+        await _render_config(hermes_home, darwin_id, session_id, agent_jwt, backend_url)
 
-        working_memory = db.build_working_memory()
+        # 3. Per-session env vars — read by darwin_tools at register time
+        os.environ["HERMES_HOME"]        = str(hermes_home)
+        os.environ["DARWIN_ID"]          = darwin_id
+        os.environ["DARWIN_SESSION_ID"]  = session_id
+        os.environ["DARWIN_AGENT_JWT"]   = agent_jwt
+        os.environ["DARWIN_BACKEND_URL"] = backend_url
+        os.environ["DARWIN_WAKE_PROMPT"] = wake_prompt
+        # VCC_REF is per-Darwin — passed as a spawn-time arg, NOT a static Modal Secret
+        os.environ["DARWIN_VCC_REF"] = vcc_ref
 
-        from hermes_core.agent import HermesAgent
-        agent = HermesAgent(
-            model=settings.llm_model,
-            system_prompt=_build_system_prompt(working_memory, wake_prompt),
-            tools=ALL_TOOLS(
-                settings=settings,
-                db=db,
-                telemetry=telemetry,
-            ),
-        )
-
-        await telemetry.push_event(
-            event_type="AGENT_WOKE",
-            payload={
-                "wake_reason": wake_prompt,
-                "session_id": session_id,
-                "balance_at_wake": working_memory.get("balance", 0),
-                "hibernated_for_hours": working_memory.get("hibernated_for_hours", 0),
-            }
-        )
+        # 4. Hand off to Hermes
+        from hermes_agent.python_library import run_session
+        from darwin_tools.lifecycle import DarwinHibernateSignal
 
         try:
-            await agent.run()
-        except HibernateSignal as sig:
-            await _execute_hibernation(sig, db, telemetry, settings)
-        except (SystemExit, KeyboardInterrupt):
-            await _execute_emergency_termination(db, telemetry, settings)
+            await run_session(
+                home=str(hermes_home),
+                user_message=wake_prompt,
+            )
+        except DarwinHibernateSignal as sig:
+            await _execute_hibernation(
+                sig, hermes_home, darwin_id, session_id, agent_jwt, backend_url
+            )
         finally:
-            heartbeat.stop()
-            await telemetry.close()
+            # Persists state.db, MEMORY.md, USER.md, skills/, sessions/ durably
             volume.commit()
 
 
-def _build_system_prompt(working_memory: dict, wake_prompt: str) -> str:
-    base = open("prompts/system_prompt.md").read()
-    memory_block = f"""
-## Current State
-- Darwin ID: {working_memory.get('darwin_id', 'unknown')}
-- Session ID: {working_memory.get('session_id', 'unknown')}
-- Wallet Balance: ${working_memory.get('balance', 0.0):.2f}
-- VCC Reference: {working_memory.get('vcc_ref', 'not set')}
-- Active Deployments: {working_memory.get('active_deployments', 'None')}
-- Recent Episode: {working_memory.get('last_episodic_summary', 'None — this is a fresh start.')}
+async def _render_config(
+    hermes_home: Path,
+    darwin_id: str,
+    session_id: str,
+    agent_jwt: str,
+    backend_url: str,
+) -> None:
+    from jinja2 import Template
+    tpl = Template(Path("/root/config.yaml.j2").read_text())
+    rendered = tpl.render(
+        darwin_id=darwin_id,
+        session_id=session_id,
+        backend_url=backend_url,
+    )
+    (hermes_home / "config.yaml").write_text(rendered)
 
-## Wake-Up Trigger
-{wake_prompt}
-"""
-    return base + memory_block
 
+# ---------------------------------------------------------------------------
+# Hibernation sequence
+# ---------------------------------------------------------------------------
 
 async def _execute_hibernation(
-    sig: HibernateSignal,
-    db: SQLiteClient,
-    telemetry: TelemetryClient,
-    settings: Settings,
-):
+    sig,
+    hermes_home: Path,
+    darwin_id: str,
+    session_id: str,
+    agent_jwt: str,
+    backend_url: str,
+) -> None:
     """
-    Controlled shutdown. Preserves all state before the container is destroyed.
+    Controlled shutdown. Hermes has already:
+      - Auto-compressed the conversation on context pressure
+      - Persisted MEMORY.md, USER.md, skills/ to $HERMES_HOME
+
+    Our job: sync unsynced entities, register wake trigger, push canvas event.
+    We do NOT call compress_session_to_episodic() — Hermes handles that.
+    We do NOT stop a heartbeat thread — there isn't one.
     """
-    summary = None
-    raw_transcript = db.get_current_session_transcript()
-    if raw_transcript and len(raw_transcript) > 500:
-        import anthropic
-        llm_client = anthropic.AsyncAnthropic()
-        summary = await compress_session_to_episodic(raw_transcript, llm_client)
-        db.save_episodic_summary(summary)
-        await telemetry.push_event("EPISODIC_SUMMARY_WRITTEN", {
-            "session_id": settings.session_id,
-            "summary": summary,
-            "raw_tokens_compressed": len(raw_transcript.split()),
-            "summary_tokens": len(summary.split()),
-        })
+    import json
+    import sqlite3
+    import httpx
+    from datetime import datetime, timedelta
 
-    unsynced = db.get_unsynced_entities()
-    for entity in unsynced:
-        await telemetry.push_entity(
-            entity["entity_type"],
-            entity["id"],
-            json.loads(entity["data"]),
-            "UPDATE",
-        )
-        db.mark_entity_synced(entity["id"])
+    base = backend_url.rstrip("/") + "/api/v1"
+    headers = {"Authorization": f"Bearer {agent_jwt}"}
 
-    wake_trigger = {}
+    # Step 1: Sync any unsynced darwin_entities — best effort
+    db_path = hermes_home / "state.db"
+    if db_path.exists():
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT id, entity_type, data FROM darwin_entities WHERE synced_at IS NULL"
+        ).fetchall()
+        for entity_id, etype, data in rows:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    await client.post(
+                        f"{base}/telemetry/entity",
+                        json={
+                            "darwin_id": darwin_id,
+                            "session_id": session_id,
+                            "entity_type": etype,
+                            "entity_id": entity_id,
+                            "data": json.loads(data),
+                            "operation": "UPSERT",
+                        },
+                        headers=headers,
+                    )
+                conn.execute(
+                    "UPDATE darwin_entities SET synced_at = ? WHERE id = ?",
+                    (int(datetime.utcnow().timestamp()), entity_id),
+                )
+                conn.commit()
+            except Exception:
+                pass  # retried on next session
+        conn.close()
+
+    # Step 2: Register wake trigger
+    wake_trigger: dict = {}
     if sig.wake_after_hours:
-        from datetime import datetime, timedelta
         wake_trigger = {
             "type": "CRON",
-            "trigger_at": (datetime.utcnow() + timedelta(hours=sig.wake_after_hours)).isoformat(),
+            "trigger_at": (
+                datetime.utcnow() + timedelta(hours=sig.wake_after_hours)
+            ).isoformat(),
         }
     elif sig.wake_on_webhook:
-        wake_trigger = {
-            "type": "WEBHOOK",
-            "webhook_key": sig.wake_on_webhook,
-        }
+        wake_trigger = {"type": "WEBHOOK", "webhook_key": sig.wake_on_webhook}
 
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            await client.post(
-                settings.backend_url.rstrip("/") + f"/api/v1/darwins/{settings.darwin_id}/hibernate",
-                json={
-                    "session_id": settings.session_id,
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        await client.post(
+            f"{base}/darwins/{darwin_id}/hibernate",
+            json={
+                "session_id": session_id,
+                "reason": sig.reason,
+                "wake_trigger": wake_trigger,
+                "browserbase_session_id": sig.keep_browser_session,
+            },
+            headers=headers,
+        )
+
+        # Step 3: Final canvas event
+        await client.post(
+            f"{base}/telemetry/stream-event",
+            json={
+                "darwin_id": darwin_id,
+                "session_id": session_id,
+                "event_type": "AGENT_HIBERNATED",
+                "payload": {
                     "reason": sig.reason,
-                    "wake_trigger": wake_trigger,
-                    "browserbase_session_id": sig.keep_browser_session,
-                    "episodic_summary": summary or "No new activity this session.",
+                    "wake_trigger_type": wake_trigger.get("type"),
+                    "wake_trigger_at": wake_trigger.get("trigger_at"),
+                    "browserbase_kept_alive": sig.keep_browser_session is not None,
                 },
-                headers={"Authorization": f"Bearer {settings.agent_jwt}"},
-            )
-    except Exception:
-        pass
-
-    await telemetry.push_event("AGENT_HIBERNATED", {
-        "reason": sig.reason,
-        "wake_trigger_type": wake_trigger.get("type"),
-        "wake_trigger_at": wake_trigger.get("trigger_at"),
-        "episodic_summary": summary,
-        "browserbase_session_kept_alive": sig.keep_browser_session is not None,
-    })
-
-
-async def _execute_emergency_termination(
-    db: SQLiteClient,
-    telemetry: TelemetryClient,
-    settings: Settings,
-):
-    """Kill signal received — flush state and exit immediately."""
-    await telemetry.push_event("AGENT_KILLED", {
-        "session_id": settings.session_id,
-        "reason": "Kill signal received from backend",
-    })
+                "timestamp_ms": int(datetime.utcnow().timestamp() * 1000),
+            },
+            headers=headers,
+        )
