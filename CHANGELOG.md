@@ -11,6 +11,60 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.0] — 2026-05-02
+
+Major architecture correction following a deep audit of Hermes Agent's actual capabilities. The previous implementation was re-building from scratch what Hermes already ships natively. This release aligns the codebase with the v0.1 engineering spec.
+
+### Changed — architecture
+
+- **Submodule corrected**: `hermes-function-calling` → `NousResearch/hermes-agent` (the actual production agent runtime, not the function-calling utility library)
+- **Plugin system adopted**: Darwin tools now live in a proper Hermes plugin (`plugin.yaml` + `register(ctx)`) discovered via pip entry points. Hermes calls `register(ctx)` at session start — no manual wiring.
+- **`modal_app.py` simplified**: now calls `hermes_agent.python_library.run_session()`. Hermes handles the system prompt, tool loop, memory, compression, and session lifecycle. We only bootstrap env vars and handle `DarwinHibernateSignal`.
+- **LangSmith → Langfuse**: observability handled by enabling the bundled `observability/langfuse` Hermes plugin. `tracing/langsmith.py` removed.
+- **Telemetry → hooks**: `telemetry/client.py` and `telemetry/heartbeat.py` replaced by `darwin_tools/pnl_hooks.py`. Hooks fire automatically on every Hermes event — no background thread, no Redis kill-signal poll.
+- **Config**: `config.yaml` → `config/config.yaml.j2` (Jinja2 template rendered per session into `$HERMES_HOME/config.yaml`). Hermes reads it natively.
+
+### Added
+
+- `darwin_tools/plugin.yaml` — Hermes plugin manifest
+- `darwin_tools/backend_client.py` — singleton signed HTTPS client to the God Layer
+- `darwin_tools/pnl_hooks.py` — P&L telemetry: 7 hooks covering every LLM call, tool call, subagent stop, and session end
+- `darwin_tools/entities.py` — `save_entity` tool + `darwin_entities` table creation in Hermes' `state.db`
+- `config/config.yaml.j2` — full Hermes config template (Modal terminal, Browserbase browser, compression, delegation, code execution, approvals, security, Langfuse)
+- `darwin_skills/shopify-checkout-2026/SKILL.md` — starter procedural skill
+- `darwin_skills/stripe-2fa-handler/SKILL.md`
+- `darwin_skills/browser-screenshot-loop/SKILL.md`
+- `darwin_skills/episodic-self-check/SKILL.md`
+
+### Removed — replaced by Hermes built-ins
+
+| Removed | Replaced by |
+|---|---|
+| `darwin_tools/browser.py` | `browser_navigate`, `browser_snapshot`, `browser_vision`, `browser_click` (Hermes built-ins via `browser.backend: browserbase`) |
+| `darwin_tools/memory.py` | `skill_manage`, `skill_view`, `skills_list`, `session_search`, Hermes context compressor |
+| `darwin_tools/neurons.py` + `neurons/runner.py` | `delegate_task` (Hermes built-in) |
+| `darwin_tools/human.py` (ask_human) | `clarify` (Hermes built-in) |
+| `darwin_tools/cron.py` | `cronjob` (Hermes built-in) |
+| `darwin_tools/delegate.py` | `delegate_task` (Hermes built-in) |
+| `darwin_tools/code_runner.py` | `execute_code` (Hermes built-in) |
+| `darwin_tools/hooks.py` + `darwin_tools/circuit_breaker.py` | `pnl_hooks.py` + Hermes `max_turns` + `approvals.mode: smart` |
+| `telemetry/client.py`, `telemetry/heartbeat.py` | Plugin hooks + Hermes gateway |
+| `telemetry/compressor.py` | Hermes native context compressor |
+| `telemetry/provider_router.py` | Hermes native provider routing |
+| `telemetry/redaction.py` | `security.redact_secrets: true` in Hermes config |
+| `tracing/langsmith.py` | Hermes `observability/langfuse` plugin |
+| `db/schema.sql`, `db/client.py`, `db/migrations/` | Hermes `state.db` (we add only `darwin_entities` from inside the plugin) |
+| `prompts/working_memory.md.jinja` | Hermes builds the system prompt from SOUL.md + MEMORY.md + USER.md natively |
+| `config.yaml` | `config/config.yaml.j2` (Jinja template rendered per session) |
+
+### Simplified
+
+- `pyproject.toml` — 5 dependencies instead of 14 (Hermes bundles the rest)
+- `config.py` — 5 fields instead of 14 (most config lives in `config.yaml.j2`)
+- `.env.example` — Langfuse keys replace LangSmith; no `REDIS_URL`
+
+---
+
 ## [0.1.0] — 2026-05-02
 
 Initial implementation of the Phase 1 MVP spec.

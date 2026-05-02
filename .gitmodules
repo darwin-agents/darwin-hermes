@@ -1,4 +1,4 @@
 [submodule "hermes-core"]
 	path = hermes-core
-	url = https://github.com/NousResearch/hermes-function-calling
+	url = https://github.com/NousResearch/hermes-agent
 	shallow = true

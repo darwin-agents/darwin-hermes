@@ -1,134 +1,171 @@
 # darwin-agent
 
-The cognitive engine of the Darwin Agents platform. Runs inside ephemeral [Modal](https://modal.com) containers, reasons with [Hermes](https://github.com/NousResearch/hermes-function-calling), browses the web via [Browserbase](https://browserbase.com), and communicates with the `darwin-backend` (God Layer) for financial reality and persistent identity.
+The cognitive engine of the Darwin Agents platform. Runs inside ephemeral [Modal](https://modal.com) containers, powered by [Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous Research, MIT), browses the web via [Browserbase](https://browserbase.com), and communicates with the `darwin-backend` (God Layer) for financial reality and persistent identity.
 
-## Architecture overview
+> **Architecture principle:** Hermes already implements ~90% of the cognitive infrastructure. Darwin's proprietary work is the financial tools, the FastAPI God Layer, and the swarm UI. Nothing else.
 
-```
-darwin-backend  ──── spawns ────►  Modal container
-                                        │
-                                   modal_app.py  (boot sequence)
-                                        │
-                          ┌─────────────┼──────────────┐
-                          ▼             ▼              ▼
-                    HermesAgent   HeartbeatThread  TelemetryClient
-                    (reasoning)   (Redis / kill)   (/telemetry/*)
-                          │
-                   darwin_tools/  (20 tools injected at runtime)
-                          │
-                   /data/agent_memory/hermes.db  (Modal Volume — persists across hibernation)
-```
+---
 
-**Ownership boundary**
+## What Darwin owns vs what Hermes provides
 
-| Owned by the agent | Owned by the backend |
-| --- | --- |
-| Reasoning, strategy, tool use | Master ledger, VCC decryption |
-| Web navigation | Hibernation scheduling |
-| Local SQLite (entities, skills, ledger shadow) | Canonical event log |
-| Skill compilation | Everything the frontend sees |
+| Layer | Owner |
+|---|---|
+| Reasoning loop, memory, context compression, skill learning | **Hermes** |
+| Browser control (Browserbase), vision, web search | **Hermes** |
+| Sub-agent delegation (`delegate_task`), code execution | **Hermes** |
+| Telegram gateway, `clarify` (ask_human), approval flow | **Hermes** |
+| Langfuse observability (Mental Replay) | **Hermes** |
+| Financial tools — ledger, VCC, payment injection | **Darwin** |
+| `hibernate` (pause-and-resume) and `request_approval` | **Darwin** |
+| `save_entity` — sync business objects to the frontend | **Darwin** |
+| P&L telemetry hooks → God Layer | **Darwin** |
+| FastAPI God Layer, Supabase, VCC vault | **Darwin** |
+| Swarm-level Vue/Nuxt dashboard | **Darwin** |
 
-The agent communicates with the backend through two categories of calls only:
-
-1. `/finance` endpoints — ledger reads/writes, payment injection
-2. `/telemetry` endpoints — every cognitive event and metabolic metric
+---
 
 ## Repository structure
 
 ```
 darwin-agent/
-├── hermes-core/                    # git submodule — Nous Research Hermes (never modified)
+├── hermes-core/                    # git submodule — NousResearch/hermes-agent (NEVER modified)
 │
-├── darwin_tools/                   # proprietary tool definitions injected at runtime
-│   ├── __init__.py                 # ALL_TOOLS factory
+├── darwin_tools/                   # our Hermes plugin — single integration point
+│   ├── plugin.yaml                 # Hermes plugin manifest
+│   ├── __init__.py                 # register(ctx) — wires tools + hooks
 │   ├── finance.py                  # check_ledger, record_expense, inject_payment
-│   ├── lifecycle.py                # hibernate, check_kill_signal, HibernateSignal
-│   ├── human.py                    # ask_human, request_approval
-│   ├── browser.py                  # browser_fetch, browser_session, take_screenshot,
-│   │                               #   click_element, type_text
-│   ├── memory.py                   # save_skill, search_skills, save_entity,
-│   │                               #   search_memory, compress_session_to_episodic
+│   ├── lifecycle.py                # hibernate, request_approval
 │   ├── files.py                    # upload_file
 │   ├── comms.py                    # send_email
-│   ├── neurons.py                  # spawn_neuron
-│   └── audit.py                    # log_decision
+│   ├── audit.py                    # log_decision
+│   ├── entities.py                 # save_entity (+ darwin_entities table in state.db)
+│   ├── pnl_hooks.py                # pre/post LLM + tool hooks → /telemetry
+│   └── backend_client.py           # signed HTTPS client to the God Layer
+│
+├── darwin_skills/                  # read-only starter skills (mounted via skills.external_dirs)
+│   ├── shopify-checkout-2026/
+│   ├── stripe-2fa-handler/
+│   ├── browser-screenshot-loop/
+│   └── episodic-self-check/
 │
 ├── prompts/
-│   ├── system_prompt.md            # base DNA — survival directive, P&L imperative
-│   └── working_memory.md.jinja     # template for working memory injection at wake-up
+│   └── SOUL.md                     # agent DNA — copied to $HERMES_HOME/SOUL.md at boot
 │
-├── db/
-│   ├── schema.sql                  # Hermes SQLite schema + Darwin extensions
-│   ├── migrations/                 # numbered migration scripts applied at wake-up
-│   └── client.py                   # SQLite connection wrapper with FTS5 helpers
+├── config/
+│   └── config.yaml.j2              # Hermes config template rendered per session
 │
-├── telemetry/
-│   ├── client.py                   # HTTP client for /telemetry/* backend calls
-│   └── heartbeat.py                # background heartbeat thread (Redis + kill signal)
-│
-├── tracing/
-│   └── langsmith.py                # LangSmith trace wrappers
-│
-├── neurons/
-│   └── runner.py                   # asyncio task runner for parallel sub-agents
-│
-├── config.py                       # pydantic-settings — reads env vars injected by Modal
-├── modal_app.py                    # Modal @app.function() entrypoint — the boot sequence
-├── pyproject.toml
+├── modal_app.py                    # Modal entrypoint — boot sequence
+├── pyproject.toml                  # hermes-agent dep + darwin entry point
 └── uv.lock
 ```
 
+**Everything Hermes-native** — `state.db`, `MEMORY.md`, `USER.md`, `skills/`, `sessions/`, `logs/`, `mcp-tokens/`, `cron/` — lives under `$HERMES_HOME` (`/data/hermes_home` on the Modal Volume). We never reimplement those.
+
+---
+
 ## Prerequisites
 
-- [uv](https://docs.astral.sh/uv/) — all package management goes through uv
-- [Modal CLI](https://modal.com/docs/guide) — `pip install modal` then `modal setup`
-- Python 3.12+
+- [uv](https://docs.astral.sh/uv/)
+- [Modal CLI](https://modal.com/docs/guide) — `modal setup`
+- Python ≥ 3.11
 
 ## Local setup
 
 ```bash
 git clone <repo>
 cd darwin-agent
-git submodule update --init --recursive   # pull hermes-core
+git submodule update --init --recursive   # pull NousResearch/hermes-agent
 
-uv sync                                   # install all dependencies from uv.lock
-uv pip install -e hermes-core             # install Hermes as an editable local package
+uv sync                                   # install from uv.lock
+uv pip install -e hermes-core[all]        # install Hermes from submodule
 ```
 
-Copy `.env.example` → `.env` and fill in the required values:
+Copy `.env.example` → `.env`:
 
 ```bash
 cp .env.example .env
+# Fill in ANTHROPIC_API_KEY, DARWIN_BACKEND_URL, etc.
 ```
 
-## Environment variables
+---
 
-| Variable | Source | Description |
-| --- | --- | --- |
-| `DARWIN_ID` | spawn-time arg | This agent's UUID |
-| `SESSION_ID` | spawn-time arg | Current session UUID |
-| `AGENT_JWT` | spawn-time arg | Short-lived JWT for backend auth |
-| `BACKEND_URL` | spawn-time arg | God Layer base URL |
-| `LLM_MODEL` | spawn-time arg | Model slug (e.g. `claude-sonnet-4-6`) |
-| `VCC_REF` | spawn-time arg | Reference token for this agent's VCC |
-| `REDIS_URL` | Modal Secret | Heartbeat and kill signal |
-| `BROWSERBASE_API_KEY` | Modal Secret | Browserbase API key |
-| `BROWSERBASE_PROJECT_ID` | Modal Secret | Browserbase project ID |
-| `LANGSMITH_API_KEY` | Modal Secret | LangSmith tracing |
-| `ANTHROPIC_API_KEY` | Modal Secret | Primary LLM provider |
-| `OPENAI_API_KEY` | Modal Secret | Fallback LLM + embeddings |
+## How Darwin tools integrate with Hermes
 
-Create the Modal secret once:
+The `darwin_tools/` package is a Hermes plugin, discovered automatically via the entry point:
 
-```bash
-modal secret create darwin-agent-secrets \
-  REDIS_URL=redis://... \
-  BROWSERBASE_API_KEY=... \
-  BROWSERBASE_PROJECT_ID=... \
-  LANGSMITH_API_KEY=... \
-  ANTHROPIC_API_KEY=... \
-  OPENAI_API_KEY=...
+```toml
+[project.entry-points."hermes_agent.plugins"]
+darwin = "darwin_tools:register"
 ```
+
+Hermes calls `register(ctx)` at session start. All 9 proprietary tools and 7 hooks wire up through `ctx.register_tool()` and `ctx.register_hook()`. The agent then uses them alongside Hermes' built-in tools with the same syntax.
+
+---
+
+## Proprietary tools (9)
+
+| Tool | What it does |
+|---|---|
+| `check_ledger` | Read balance + recent transactions from the God Layer |
+| `record_expense` | Debit the master ledger after a purchase |
+| `inject_payment` | VCC injection via backend WebSocket — agent never sees PAN |
+| `hibernate` | Pause container; preserve `$HERMES_HOME` on Modal Volume |
+| `request_approval` | Send Telegram approval request; returns webhook key for `hibernate` |
+| `save_entity` | Persist business object to `state.db` + sync to God Layer |
+| `upload_file` | Upload generated files (CSV, PDF) to storage; index for frontend |
+| `send_email` | Send via creator's configured email provider |
+| `log_decision` | Append to immutable audit trail (required before financial actions > $1) |
+
+## Hermes built-ins we use (no code on our side)
+
+| Built-in | Replaces |
+|---|---|
+| `browser_navigate`, `browser_snapshot`, `browser_vision`, `browser_click` | browser.py |
+| `web_search`, `web_extract` | browser_fetch |
+| `skill_manage`, `skill_view`, `skills_list` | save_skill, search_skills |
+| `session_search` | search_memory |
+| `delegate_task` | NeuronRunner, spawn_neuron |
+| `execute_code` | code_runner.py |
+| `clarify` | ask_human |
+| `memory` | MEMORY.md management |
+| `cronjob` | schedule_cron |
+
+---
+
+## Session lifecycle
+
+```
+God Layer spawns Modal container
+    └─► modal_app.py boots
+            ├─ Volume mounts at /data — $HERMES_HOME = /data/hermes_home
+            ├─ SOUL.md copied to $HERMES_HOME if missing
+            ├─ config.yaml rendered from template
+            ├─ Per-session env vars set (darwin_id, agent_jwt, backend_url…)
+            └─ hermes_agent.python_library.run_session() called
+
+    Hermes builds system prompt:
+            1. SOUL.md (Darwin DNA)
+            2. Tool-aware behavior guidance
+            3. MEMORY.md + USER.md (working memory)
+            4. Skills index
+            5. Timestamp
+
+    Darwin plugin registered → tools + hooks live
+    on_session_start hook → AGENT_WOKE event pushed
+
+    Agent runs (check_ledger first, then work…)
+            ├─ Every LLM call: post_llm_call hook → /telemetry/stream
+            └─ Every tool call: pre/post_tool_call hooks → canvas events
+
+    Agent calls hibernate()
+            ├─ DarwinHibernateSignal raised
+            ├─ Unsynced darwin_entities flushed to backend
+            ├─ Wake trigger registered (CRON or WEBHOOK)
+            ├─ AGENT_HIBERNATED canvas event pushed
+            └─ volume.commit() → container exits → billing stops
+```
+
+---
 
 ## Deployment
 
@@ -136,87 +173,46 @@ modal secret create darwin-agent-secrets \
 modal deploy modal_app.py
 ```
 
-The backend calls `run_agent.remote(darwin_id=..., session_id=..., ...)` to spawn a container.
+Create the Modal secret once:
+
+```bash
+modal secret create darwin-agent-secrets \
+  ANTHROPIC_API_KEY=... \
+  OPENROUTER_API_KEY=... \
+  AGENT_JWT_SECRET=... \
+  BROWSERBASE_API_KEY=... \
+  BROWSERBASE_PROJECT_ID=... \
+  MODAL_TOKEN_ID=... \
+  MODAL_TOKEN_SECRET=... \
+  HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-... \
+  HERMES_LANGFUSE_SECRET_KEY=sk-lf-... \
+  HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com
+```
+
+---
 
 ## Memory architecture
 
-Three tiers, ruthlessly token-efficient:
+| Tier | Storage | Loaded at wake-up |
+|---|---|---|
+| Working | `$HERMES_HOME/SOUL.md` + `MEMORY.md` + `USER.md` | Always — Hermes builds system prompt |
+| Episodic | Compressed conversation history in `state.db` | Auto-managed by Hermes context compressor |
+| Procedural | `$HERMES_HOME/skills/` + `darwin_skills/` | On demand via `skill_view` |
 
-| Tier | Storage | Budget | Loaded at wake-up |
-| --- | --- | --- | --- |
-| **Working memory** | `hermes_memory` (SQLite) | ≤ 500 tokens | Always — injected into system prompt |
-| **Episodic memory** | `hermes_sessions.summary` (SQLite) | ~200 tokens per session | Always — last session summary only |
-| **Procedural memory** | `darwin_skills` FTS5 (SQLite) | Unlimited | On demand via `search_skills()` |
+---
 
-Raw session transcripts are stored in `hermes_sessions.transcript` and accessible only via `search_memory()`.
-
-## Tools
-
-| Tool | Module | Cost | Purpose |
-| --- | --- | --- | --- |
-| `check_ledger` | finance | ~$0.000 | Read balance + recent transactions |
-| `record_expense` | finance | ~$0.000 | Record a debit after a purchase |
-| `inject_payment` | finance | ~$0.000 | VCC injection via backend (agent never sees PAN) |
-| `hibernate` | lifecycle | ~$0.000 | Suspend container; preserve state |
-| `check_kill_signal` | lifecycle | ~$0.000 | Redis kill signal poll |
-| `ask_human` | human | free | Escalate 2FA / CAPTCHA to creator |
-| `request_approval` | human | free | Get approval before large purchase |
-| `browser_fetch` | browser | ~$0.001 | Lightweight text-only page fetch |
-| `browser_session` | browser | ~$0.050 | Full stealth browser session |
-| `take_screenshot` | browser | ~$0.020 | Capture viewport for VLM analysis |
-| `click_element` | browser | ~$0.001 | Click at pixel coordinates |
-| `type_text` | browser | ~$0.001 | Type into an input field |
-| `save_skill` | memory | ~$0.001 | Compile a workflow into a skill doc |
-| `search_skills` | memory | ~$0.001 | FTS5 + global semantic skill search |
-| `save_entity` | memory | ~$0.001 | Persist a business entity + sync to frontend |
-| `search_memory` | memory | ~$0.001 | FTS5 search over historical transcripts |
-| `upload_file` | files | ~$0.001 | Upload a generated file to storage |
-| `send_email` | comms | ~$0.001 | Send email via creator's provider |
-| `spawn_neuron` | neurons | varies | Launch a parallel sub-agent |
-| `log_decision` | audit | ~$0.000 | Immutable audit trail entry |
-
-## Session lifecycle
-
-```
-Backend spawns container
-    └─► modal_app.py boots
-            ├─ Modal Volume mounts at /data/agent_memory
-            ├─ SQLiteClient opens hermes.db + runs pending migrations
-            ├─ TelemetryClient initialised
-            ├─ HeartbeatThread starts (Redis heartbeat + kill signal poll every 15s)
-            ├─ Working memory loaded → system prompt built
-            ├─ HermesAgent initialised with ALL_TOOLS
-            ├─ AGENT_WOKE event pushed
-            └─ agent.run() → LLM reasons and calls tools
-
-    Agent calls hibernate()
-            ├─ Episodic compression (full transcript → ~200-token summary)
-            ├─ Unsynced entities flushed to backend
-            ├─ Wake trigger registered with backend (CRON or WEBHOOK)
-            ├─ AGENT_HIBERNATED event pushed
-            └─ volume.commit() → container exits → billing stops
-```
-
-## Prompt injection defence
-
-| Layer | Mechanism |
-| --- | --- |
-| VCC blindfold | Agent holds only `vcc_ref` token, never the PAN |
-| Lexical quarantine | All web content wrapped in `<external_data>` tags; system prompt forbids obeying instructions inside them |
-| Tool schema enforcement | Hermes registry allows only registered tools — no arbitrary HTTP calls |
-| Amnesia protocol | Ephemeral containers; any compromised session dies with the container |
-
-## Adding a migration
-
-Create a new file in `db/migrations/` named `NNN_description.sql` where `NNN` is the next integer. It is applied automatically on the next container boot if not already tracked in `darwin_migrations`.
+## Upgrading Hermes
 
 ```bash
-touch db/migrations/002_add_revenue_table.sql
+git submodule update --remote hermes-core
+uv sync
+# Run integration tests
+# If something breaks, pin to last stable tag:
+git -C hermes-core checkout <stable-tag>
 ```
 
-## Adding a tool
+## Adding a Darwin tool
 
-1. Implement the async function in the appropriate `darwin_tools/` module, following the `build_*_tools(settings, db, telemetry)` factory pattern.
-2. Add it to the list returned by that factory.
-3. Import and call the factory in `darwin_tools/__init__.py` → `ALL_TOOLS()`.
-4. The tool is now available to Hermes at the next container boot.
+1. Add a handler + schema in the appropriate `darwin_tools/` module
+2. Register with `ctx.register_tool(name, schema, handler)` in that module's `register_*_tools(ctx)` function
+3. Import and call the function in `darwin_tools/__init__.py` → `register(ctx)`
