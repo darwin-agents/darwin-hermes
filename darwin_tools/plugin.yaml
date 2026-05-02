@@ -1,0 +1,6 @@
+name: darwin
+version: "1.0"
+description: Darwin Agent — financial tools, lifecycle control, and P&L telemetry
+requires_env:
+  - DARWIN_BACKEND_URL
+  - DARWIN_AGENT_JWT

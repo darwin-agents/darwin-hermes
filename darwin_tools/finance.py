@@ -1,116 +1,153 @@
-import httpx
+"""
+Financial tools — darwin_tools/finance.py
+
+check_ledger, record_expense, inject_payment.
+All forward to the God Layer over HTTPS with JWT auth.
+The agent never holds raw VCC PAN — only an opaque vcc_ref token.
+"""
+
+from __future__ import annotations
+
+import os
 
 
-def build_finance_tools(settings, db, telemetry):
-    async def _backend_get(path: str, params: dict = None) -> dict:
-        url = settings.backend_url.rstrip("/") + "/api/v1" + path
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                url,
-                params=params,
-                headers={"Authorization": f"Bearer {settings.agent_jwt}"},
-            )
-            resp.raise_for_status()
-            return resp.json()
+def register_finance_tools(ctx) -> None:
+    ctx.register_tool("check_ledger",   _schema_check_ledger,   _handle_check_ledger)
+    ctx.register_tool("record_expense", _schema_record_expense, _handle_record_expense)
+    ctx.register_tool("inject_payment", _schema_inject_payment, _handle_inject_payment)
 
-    async def _backend_post(path: str, body: dict) -> dict:
-        url = settings.backend_url.rstrip("/") + "/api/v1" + path
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                url,
-                json=body,
-                headers={"Authorization": f"Bearer {settings.agent_jwt}"},
-            )
-            resp.raise_for_status()
-            return resp.json()
 
-    async def check_ledger() -> dict:
-        """
-        Returns your current wallet balance and recent transaction history.
-        Call this before any spending decision.
+# ---------------------------------------------------------------------------
+# check_ledger
+# ---------------------------------------------------------------------------
 
-        Returns: { "balance": float, "initial_budget": float, "pct_remaining": float,
-                    "recent_transactions": list }
-        """
-        resp = await _backend_get(f"/finance/ledger/{settings.darwin_id}")
-        return {
-            "balance": resp["current_balance"],
-            "initial_budget": resp["initial_budget"],
-            "pct_remaining": round(resp["current_balance"] / resp["initial_budget"] * 100, 1),
-            "recent_transactions": resp["transactions"][:5],
-        }
+_schema_check_ledger = {
+    "name": "check_ledger",
+    "description": (
+        "Returns your current wallet balance and recent transaction history. "
+        "Call this at the start of every session before any spending decision."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
 
-    async def record_expense(
-        amount: float,
-        description: str,
-        type: str = "VCC_DEBIT",
-        external_ref: str = None,
-    ) -> dict:
-        """
-        Record a spending event after a purchase has been made.
-        Call this AFTER a successful checkout, not before.
 
-        Args:
-            amount: Positive number representing the amount spent (e.g., 12.99)
-            description: What was purchased
-            type: Transaction type — defaults to 'VCC_DEBIT'
-            external_ref: Optional order ID or reference from the merchant
+async def _handle_check_ledger(params: dict) -> dict:
+    from .backend_client import get_backend_client
+    client = get_backend_client()
+    resp = await client.get(f"/finance/ledger/{client.darwin_id}")
+    return {
+        "balance": resp["current_balance"],
+        "initial_budget": resp["initial_budget"],
+        "pct_remaining": round(
+            resp["current_balance"] / resp["initial_budget"] * 100, 1
+        ),
+        "recent_transactions": resp["transactions"][:5],
+    }
 
-        Returns: { "new_balance": float, "transaction_id": str }
-        Raises: InsufficientFundsError if balance would go negative
-        """
-        resp = await _backend_post("/finance/ledger/update", {
-            "darwin_id": settings.darwin_id,
-            "session_id": settings.session_id,
-            "amount": -abs(amount),
-            "type": type,
-            "description": description,
-            "external_ref": external_ref,
-        })
-        db.record_local_expense(-abs(amount), resp["new_balance"], type, description, external_ref)
-        return resp
 
-    async def inject_payment(
-        browserbase_session_id: str,
-        merchant_name: str,
-        amount: float,
-        pan_element: str,
-        cvv_element: str,
-        expiry_element: str,
-    ) -> dict:
-        """
-        Securely inject your VCC into the active browser session to complete a purchase.
-        You never see the raw card number — the backend handles decryption and injection directly.
+# ---------------------------------------------------------------------------
+# record_expense
+# ---------------------------------------------------------------------------
 
-        Args:
-            browserbase_session_id: The active Browserbase session ID
-            merchant_name: Name of the merchant (for audit log)
-            amount: Expected charge amount (for pre-authorisation check)
-            pan_element: CSS selector or coordinate description for the card number field
-            cvv_element: CSS selector or coordinate description for the CVV field
-            expiry_element: CSS selector or coordinate description for the expiry field
+_schema_record_expense = {
+    "name": "record_expense",
+    "description": (
+        "Record a spending event AFTER a purchase has been completed. "
+        "Never call before the checkout succeeds."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "amount": {
+                "type": "number",
+                "description": "Amount spent in USD (positive number, e.g. 12.99)",
+            },
+            "description": {"type": "string"},
+            "type": {
+                "type": "string",
+                "default": "VCC_DEBIT",
+                "enum": ["VCC_DEBIT", "SUBSCRIPTION", "SERVICE_FEE", "AD_SPEND"],
+            },
+            "external_ref": {
+                "type": "string",
+                "description": "Optional order ID or reference from the merchant",
+            },
+        },
+        "required": ["amount", "description"],
+    },
+}
 
-        Returns: { "injected": true } on success
-        """
-        from darwin_tools.audit import build_audit_tools
-        audit_tools = build_audit_tools(settings, db, telemetry)
-        log_decision = audit_tools[0]
 
-        await log_decision(
-            event_type="VCC_PURCHASE",
-            decision=f"Inject VCC for purchase at {merchant_name} — ${amount:.2f}",
-            financial_impact=-amount,
-        )
-        resp = await _backend_post("/finance/inject-payment", {
-            "darwin_id": settings.darwin_id,
-            "vcc_ref": settings.vcc_ref,
-            "browserbase_session_id": browserbase_session_id,
-            "target_fields": {
-                "pan_element": pan_element,
-                "cvv_element": cvv_element,
-                "expiry_element": expiry_element,
-            }
-        })
-        return resp
+async def _handle_record_expense(params: dict) -> dict:
+    from .backend_client import get_backend_client
+    client = get_backend_client()
+    resp = await client.post("/finance/ledger/update", {
+        "darwin_id": client.darwin_id,
+        "session_id": client.session_id,
+        "amount": -abs(params["amount"]),   # always a debit
+        "type": params.get("type", "VCC_DEBIT"),
+        "description": params["description"],
+        "external_ref": params.get("external_ref"),
+    })
+    return resp
 
-    return [check_ledger, record_expense, inject_payment]
+
+# ---------------------------------------------------------------------------
+# inject_payment
+# ---------------------------------------------------------------------------
+
+_schema_inject_payment = {
+    "name": "inject_payment",
+    "description": (
+        "Securely inject your VCC into the active browser session to complete a purchase. "
+        "You never see the raw card number — the backend handles decryption and injection. "
+        "Always call log_decision() BEFORE this tool for any purchase over $1.00."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "browserbase_session_id": {
+                "type": "string",
+                "description": "The active Browserbase session ID",
+            },
+            "merchant_name": {"type": "string"},
+            "amount": {"type": "number", "description": "Expected charge in USD"},
+            "pan_element": {
+                "type": "string",
+                "description": "CSS selector or coordinate hint for the card number field",
+            },
+            "cvv_element": {"type": "string"},
+            "expiry_element": {"type": "string"},
+        },
+        "required": ["browserbase_session_id", "merchant_name", "amount",
+                     "pan_element", "cvv_element", "expiry_element"],
+    },
+}
+
+
+async def _handle_inject_payment(params: dict) -> dict:
+    """Agent never sees raw PAN/CVV — backend handles decryption + WebSocket injection."""
+    from .backend_client import get_backend_client
+    client = get_backend_client()
+
+    # Audit-log intent before money moves
+    await client.post("/audit/log", {
+        "darwin_id": client.darwin_id,
+        "event_type": "VCC_PURCHASE",
+        "decision": f"Inject VCC at {params['merchant_name']} — ${params['amount']:.2f}",
+        "financial_impact": -params["amount"],
+        "context_snapshot": {"session_id": client.session_id},
+    })
+
+    return await client.post("/finance/inject-payment", {
+        "darwin_id": client.darwin_id,
+        "vcc_ref": os.environ.get("DARWIN_VCC_REF", ""),
+        "browserbase_session_id": params["browserbase_session_id"],
+        "merchant_name": params["merchant_name"],
+        "expected_amount": params["amount"],
+        "target_fields": {
+            "pan_element": params["pan_element"],
+            "cvv_element": params["cvv_element"],
+            "expiry_element": params["expiry_element"],
+        },
+    })

@@ -1,44 +1,60 @@
-import httpx
+"""
+Audit tool — darwin_tools/audit.py
+
+log_decision: append to the immutable audit trail.
+Required before any action with financial_impact > $1.00.
+
+Note: the pre_tool_call hook in pnl_hooks.py already auto-emits TOOL_CALL
+events for every tool call. log_decision is reserved for explicit financial
+audit-log entries that require a structured payload.
+"""
+
+from __future__ import annotations
 
 
-def build_audit_tools(settings, db, telemetry):
-    async def _backend_post(path: str, body: dict) -> dict:
-        url = settings.backend_url.rstrip("/") + "/api/v1" + path
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                url,
-                json=body,
-                headers={"Authorization": f"Bearer {settings.agent_jwt}"},
-            )
-            resp.raise_for_status()
-            return resp.json()
+def register_audit_tools(ctx) -> None:
+    ctx.register_tool("log_decision", _schema_log_decision, _handle_log_decision)
 
-    async def log_decision(
-        event_type: str,
-        decision: str,
-        financial_impact: float = 0.0,
-        prompt_snapshot: str = None,
-    ) -> None:
-        """
-        Log a significant decision to the immutable audit trail.
-        REQUIRED before any action with a financial impact > $1.00.
 
-        Args:
-            event_type: Category (e.g., 'VCC_PURCHASE', 'STRATEGY_PIVOT', 'ACCOUNT_OPENED')
-            decision: What you decided and why
-            financial_impact: Expected monetary impact (negative = spend, positive = revenue)
-            prompt_snapshot: Your current reasoning context (optional — auto-captured if omitted)
-        """
-        await _backend_post("/audit/log", {
-            "darwin_id": settings.darwin_id,
-            "event_type": event_type,
-            "decision": decision,
-            "financial_impact": financial_impact,
-            "prompt_snapshot": prompt_snapshot,
-            "context_snapshot": {
-                "session_id": settings.session_id,
-                "balance": db.get_local_balance(),
+_schema_log_decision = {
+    "name": "log_decision",
+    "description": (
+        "Log a significant decision to the immutable audit trail. "
+        "REQUIRED before any action with a financial impact > $1.00."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "event_type": {
+                "type": "string",
+                "description": "Category: VCC_PURCHASE | STRATEGY_PIVOT | ACCOUNT_OPENED | AD_LAUNCH",
             },
-        })
+            "decision": {"type": "string", "description": "What you decided and why"},
+            "financial_impact": {
+                "type": "number",
+                "description": "Expected monetary impact (negative = spend, positive = revenue)",
+                "default": 0.0,
+            },
+            "prompt_snapshot": {
+                "type": "string",
+                "description": "Your current reasoning context (optional)",
+            },
+        },
+        "required": ["event_type", "decision"],
+    },
+}
 
-    return [log_decision]
+
+async def _handle_log_decision(params: dict) -> dict:
+    from .backend_client import get_backend_client
+    client = get_backend_client()
+
+    await client.post("/audit/log", {
+        "darwin_id": client.darwin_id,
+        "event_type": params["event_type"],
+        "decision": params["decision"],
+        "financial_impact": params.get("financial_impact", 0.0),
+        "prompt_snapshot": params.get("prompt_snapshot"),
+        "context_snapshot": {"session_id": client.session_id},
+    })
+    return {"logged": True}

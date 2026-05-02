@@ -1,64 +1,75 @@
-import httpx
+"""
+Files tool — darwin_tools/files.py
+
+upload_file: request a presigned URL from the backend, upload directly
+to storage (no file content goes through backend RAM), then index it.
+The file appears in the frontend's Assets tab for the creator to download.
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
+import httpx
 
 
-def build_files_tools(settings, db, telemetry):
-    async def _backend_get(path: str, params: dict = None) -> dict:
-        url = settings.backend_url.rstrip("/") + "/api/v1" + path
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                url,
-                params=params,
-                headers={"Authorization": f"Bearer {settings.agent_jwt}"},
+def register_files_tools(ctx) -> None:
+    ctx.register_tool("upload_file", _schema_upload_file, _handle_upload_file)
+
+
+_schema_upload_file = {
+    "name": "upload_file",
+    "description": (
+        "Upload a file you have generated (CSV, PDF, image, report) to permanent storage. "
+        "The file appears in the frontend's Assets tab for your creator to download."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "filepath": {
+                "type": "string",
+                "description": "Local path to the file inside the container",
+            },
+            "description": {
+                "type": "string",
+                "description": "Human-readable description of the file contents",
+            },
+            "content_type": {
+                "type": "string",
+                "default": "application/octet-stream",
+                "description": "MIME type (e.g. 'text/csv', 'application/pdf')",
+            },
+        },
+        "required": ["filepath", "description"],
+    },
+}
+
+
+async def _handle_upload_file(params: dict) -> dict:
+    from .backend_client import get_backend_client
+    client = get_backend_client()
+
+    filepath = params["filepath"]
+    description = params["description"]
+    content_type = params.get("content_type", "application/octet-stream")
+    filename = Path(filepath).name
+
+    url_resp = await client.get("/assets/presigned-url", params={
+        "darwin_id": client.darwin_id,
+        "filename": filename,
+        "content_type": content_type,
+    })
+
+    async with httpx.AsyncClient() as http:
+        with open(filepath, "rb") as f:
+            await http.put(
+                url_resp["upload_url"],
+                content=f.read(),
+                headers={"Content-Type": content_type},
             )
-            resp.raise_for_status()
-            return resp.json()
 
-    async def _backend_post(path: str, body: dict) -> dict:
-        url = settings.backend_url.rstrip("/") + "/api/v1" + path
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                url,
-                json=body,
-                headers={"Authorization": f"Bearer {settings.agent_jwt}"},
-            )
-            resp.raise_for_status()
-            return resp.json()
-
-    async def upload_file(
-        filepath: str,
-        description: str,
-        content_type: str = "application/octet-stream",
-    ) -> dict:
-        """
-        Upload a file you have generated (CSV, PDF, image) to permanent storage.
-        The file will appear in the frontend's "Assets" tab for the human creator to download.
-
-        Args:
-            filepath: Local path to the file inside the container
-            description: Human-readable description of the file contents
-            content_type: MIME type (e.g., 'text/csv', 'application/pdf')
-
-        Returns: { "asset_id": str, "public_url": str }
-        """
-        filename = Path(filepath).name
-        url_resp = await _backend_get("/assets/presigned-url", params={
-            "darwin_id": settings.darwin_id,
-            "filename": filename,
-            "content_type": content_type,
-        })
-        async with httpx.AsyncClient() as client:
-            with open(filepath, "rb") as f:
-                await client.put(
-                    url_resp["upload_url"],
-                    content=f.read(),
-                    headers={"Content-Type": content_type},
-                )
-        await _backend_post("/assets/index", {
-            "asset_id": url_resp["asset_id"],
-            "darwin_id": settings.darwin_id,
-            "description": description,
-        })
-        return {"asset_id": url_resp["asset_id"], "public_url": url_resp["public_url"]}
-
-    return [upload_file]
+    await client.post("/assets/index", {
+        "asset_id": url_resp["asset_id"],
+        "darwin_id": client.darwin_id,
+        "description": description,
+    })
+    return {"asset_id": url_resp["asset_id"], "public_url": url_resp["public_url"]}
