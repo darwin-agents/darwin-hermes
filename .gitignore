@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# uv / pip
+.venv/
+venv/
+.cache/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# SQLite — local dev databases (prod lives on Modal Volume)
+*.db
+*.db-shm
+*.db-wal
+
+# Modal
+.modal/
+modal_cache/
+
+# LangSmith / tracing
+.langsmith/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
