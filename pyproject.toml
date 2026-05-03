@@ -24,7 +24,7 @@ darwin = "darwin_tools:register"
 [tool.setuptools.packages.find]
 include = ["darwin_tools*"]
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
