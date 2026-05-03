@@ -11,6 +11,8 @@ dependencies = [
     "jinja2>=3.1",
     "pydantic-settings>=2.5",
     "psutil>=5.9",
+    # Live per-model pricing — replaces hardcoded _MODEL_COSTS table
+    "litellm>=1.40",
 ]
 
 # Hermes is installed separately as a submodule editable install:
