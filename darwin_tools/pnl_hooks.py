@@ -14,9 +14,13 @@ Why this replaces the old HeartbeatThread + TelemetryClient:
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import json
 import time
+
+log = logging.getLogger(__name__)
 
 _session_start: float | None = None
 _token_running_total = 0
@@ -41,12 +45,13 @@ async def _on_session_start(**kwargs):
 
     from .backend_client import get_backend_client
     client = get_backend_client()
+    wake_prompt = os.environ.get("DARWIN_WAKE_PROMPT", "")
     await client.post_async("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
         "event_type": "AGENT_WOKE",
         "payload": {
-            "wake_reason": kwargs.get("wake_prompt"),
+            "wake_reason": wake_prompt or None,
             "session_id": client.session_id,
         },
         "timestamp_ms": int(time.time() * 1000),
@@ -196,9 +201,10 @@ async def _subagent_stop(parent_session_id, child_role, child_status,
 
 async def _on_session_end(**kwargs):
     """Final flush before container exit."""
-    from .backend_client import get_backend_client
+    from .backend_client import get_backend_client, close_backend_client
     client = get_backend_client()
-    await client.post("/telemetry/stream-event", {
+    # Use post_async — a telemetry failure must not prevent volume.commit()
+    await client.post_async("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
         "event_type": "SESSION_ENDED",
@@ -209,6 +215,8 @@ async def _on_session_end(**kwargs):
         },
         "timestamp_ms": int(time.time() * 1000),
     })
+    # Release the persistent HTTP connection pool
+    await close_backend_client()
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +262,7 @@ def _estimate_cost(
         )
         return prompt_cost + completion_cost
     except Exception:
+        log.warning("Could not resolve cost for model %r — reporting $0.00", model)
         return 0.0
 
 
@@ -262,11 +271,23 @@ def _redact(args: dict) -> str:
 
 
 def _redact_str(s: str) -> str:
+    # Anthropic keys
     s = re.sub(r"sk-ant-[A-Za-z0-9\-_]{20,}", "[REDACTED]", s)
+    # OpenAI / OpenRouter keys
     s = re.sub(r"sk-(?:proj-|or-)[A-Za-z0-9\-_]{20,}", "[REDACTED]", s)
     s = re.sub(r"sk-[A-Za-z0-9]{20,}", "[REDACTED]", s)
+    # JWTs
     s = re.sub(r"eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+", "[REDACTED]", s)
-    s = re.sub(r"\b\d{13,19}\b", "[REDACTED]", s)   # PAN
+    # PANs (13-19 digit numbers)
+    s = re.sub(r"\b\d{13,19}\b", "[REDACTED]", s)
+    # Browserbase API keys
+    s = re.sub(r"bb_live_[A-Za-z0-9\-_]{10,}", "[REDACTED]", s)
+    # Browser-use API keys (format: bu_<segment>_<token> or bu_live_<token>)
+    s = re.sub(r"bu_[A-Za-z0-9\-_]{14,}", "[REDACTED]", s)
+    # Modal tokens
+    s = re.sub(r"a[ks]-[A-Za-z0-9]{10,}", "[REDACTED]", s)
+    # Langfuse keys
+    s = re.sub(r"(?:pk|sk)-lf-[A-Za-z0-9\-_]{10,}", "[REDACTED]", s)
     return s
 
 

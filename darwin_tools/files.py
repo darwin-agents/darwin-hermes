@@ -59,7 +59,7 @@ async def _handle_upload_file(params: dict) -> dict:
         "content_type": content_type,
     })
 
-    async with httpx.AsyncClient() as http:
+    async with httpx.AsyncClient(timeout=30.0) as http:
         with open(filepath, "rb") as f:
             await http.put(
                 url_resp["upload_url"],

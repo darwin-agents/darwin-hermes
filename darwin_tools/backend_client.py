@@ -3,14 +3,25 @@ Signed HTTPS client to the FastAPI God Layer.
 
 All darwin_tools modules call get_backend_client() to get a singleton
 that is configured from the per-session env vars injected by modal_app.py.
+
+The singleton holds a persistent httpx.AsyncClient for connection pooling —
+a single TCP connection is reused across all ~50+ backend calls per session.
+Call close() from the on_session_end hook to release the connection.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import httpx
 
+log = logging.getLogger(__name__)
+
 _client: "BackendClient | None" = None
+
+# Split timeouts: fast connect, generous read (backend may do DB work).
+_TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
+_TIMEOUT_FIRE_AND_FORGET = httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=3.0)
 
 
 def get_backend_client() -> "BackendClient":
@@ -23,6 +34,14 @@ def get_backend_client() -> "BackendClient":
             session_id=os.environ["DARWIN_SESSION_ID"],
         )
     return _client
+
+
+async def close_backend_client() -> None:
+    """Shut down the persistent HTTP connection. Safe to call multiple times."""
+    global _client
+    if _client is not None:
+        await _client.close()
+        _client = None
 
 
 class BackendClient:
@@ -40,53 +59,43 @@ class BackendClient:
             "Authorization": f"Bearer {agent_jwt}",
             "Content-Type": "application/json",
         }
+        # Persistent client — one TCP connection pool for the container's lifetime
+        self._http = httpx.AsyncClient(
+            timeout=_TIMEOUT,
+            headers=self._headers,
+        )
+
+    async def close(self) -> None:
+        """Release the underlying connection pool."""
+        await self._http.aclose()
 
     async def get(self, path: str, params: dict | None = None) -> dict:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                self.base + path,
-                params=params,
-                headers=self._headers,
-            )
-            self._check_revocation(resp)
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._http.get(self.base + path, params=params)
+        self._check_revocation(resp)
+        resp.raise_for_status()
+        return resp.json()
 
     async def post(self, path: str, body: dict) -> dict:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                self.base + path,
-                json=body,
-                headers=self._headers,
-            )
-            self._check_revocation(resp)
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._http.post(self.base + path, json=body)
+        self._check_revocation(resp)
+        resp.raise_for_status()
+        return resp.json()
 
     async def post_async(self, path: str, body: dict) -> None:
         """Fire-and-forget — swallows errors so telemetry never blocks the agent."""
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(
-                    self.base + path,
-                    json=body,
-                    headers=self._headers,
-                )
-                self._check_revocation(resp)
+            resp = await self._http.post(self.base + path, json=body)
+            self._check_revocation(resp)
         except SystemExit:
             raise   # propagate kill signal
         except Exception:
             pass
 
     async def delete(self, path: str) -> dict:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.delete(
-                self.base + path,
-                headers=self._headers,
-            )
-            self._check_revocation(resp)
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._http.delete(self.base + path)
+        self._check_revocation(resp)
+        resp.raise_for_status()
+        return resp.json()
 
     @staticmethod
     def _check_revocation(resp: httpx.Response) -> None:

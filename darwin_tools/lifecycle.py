@@ -136,5 +136,6 @@ async def _handle_request_approval(params: dict) -> dict:
         ),
         "action_type": "APPROVAL",
         "options": ["Approve", "Deny"],
+        "webhook_key": webhook_key,
     })
     return {"webhook_key": webhook_key}

@@ -35,12 +35,13 @@ async def _handle_check_ledger(params: dict) -> dict:
     from .backend_client import get_backend_client
     client = get_backend_client()
     resp = await client.get(f"/finance/ledger/{client.darwin_id}")
+    balance = resp["current_balance"]
+    budget = resp["initial_budget"]
+    pct = round(balance / budget * 100, 1) if budget else 0.0
     return {
-        "balance": resp["current_balance"],
-        "initial_budget": resp["initial_budget"],
-        "pct_remaining": round(
-            resp["current_balance"] / resp["initial_budget"] * 100, 1
-        ),
+        "balance": balance,
+        "initial_budget": budget,
+        "pct_remaining": pct,
         "recent_transactions": resp["transactions"][:5],
     }
 
@@ -129,13 +130,31 @@ async def _handle_inject_payment(params: dict) -> dict:
     """Agent never sees raw PAN/CVV — backend handles decryption + WebSocket injection."""
     from .backend_client import get_backend_client
     client = get_backend_client()
+    amount = params["amount"]
+
+    # Pre-flight balance check — refuse if the agent can't cover the purchase
+    try:
+        ledger = await client.get(f"/finance/ledger/{client.darwin_id}")
+        current_balance = ledger.get("current_balance", 0)
+        if amount > current_balance:
+            return {
+                "error": "INSUFFICIENT_BALANCE",
+                "message": (
+                    f"Cannot inject ${amount:.2f} — current balance is ${current_balance:.2f}. "
+                    f"Call check_ledger() to confirm, then adjust your strategy."
+                ),
+            }
+    except SystemExit:
+        raise
+    except Exception:
+        pass  # balance check is best-effort; backend will enforce server-side
 
     # Audit-log intent before money moves
     await client.post("/audit/log", {
         "darwin_id": client.darwin_id,
         "event_type": "VCC_PURCHASE",
-        "decision": f"Inject VCC at {params['merchant_name']} — ${params['amount']:.2f}",
-        "financial_impact": -params["amount"],
+        "decision": f"Inject VCC at {params['merchant_name']} — ${amount:.2f}",
+        "financial_impact": -amount,
         "context_snapshot": {"session_id": client.session_id},
     })
 
@@ -144,7 +163,7 @@ async def _handle_inject_payment(params: dict) -> dict:
         "vcc_ref": os.environ.get("DARWIN_VCC_REF", ""),
         "browserbase_session_id": params["browserbase_session_id"],
         "merchant_name": params["merchant_name"],
-        "expected_amount": params["amount"],
+        "expected_amount": amount,
         "target_fields": {
             "pan_element": params["pan_element"],
             "cvv_element": params["cvv_element"],
