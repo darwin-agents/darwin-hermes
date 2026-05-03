@@ -75,7 +75,25 @@ async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **
     from .backend_client import get_backend_client
     client = get_backend_client()
 
-    # 1. Per-LLM-call record — powers Token ROI dashboard + Mental Replay cost overlay
+    # 1. THOUGHT canvas event — surfaces every cognitive turn on the Infinite Canvas
+    content = _extract_response_text(response)
+    await client.post_async("/telemetry/stream-event", {
+        "darwin_id": client.darwin_id,
+        "session_id": client.session_id,
+        "event_type": "THOUGHT",
+        "payload": {
+            "content": content[:2000],
+            "model": model,
+            "prompt_tokens": in_tok,
+            "completion_tokens": out_tok,
+            "latency_ms": duration_ms,
+        },
+        "token_cost": in_tok + out_tok,
+        "fiat_cost": cost,
+        "timestamp_ms": int(time.time() * 1000),
+    })
+
+    # 2. Per-LLM-call record — powers Token ROI dashboard + Mental Replay cost overlay
     await client.post_async("/telemetry/llm-call", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
@@ -91,7 +109,7 @@ async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **
         "timestamp_ms": int(time.time() * 1000),
     })
 
-    # 2. Rolling metrics batch — powers the burn-rate time series chart
+    # 3. Rolling metrics batch — powers the burn-rate time series chart
     await client.post_async("/telemetry/stream", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
@@ -109,6 +127,27 @@ async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **
 async def _pre_tool_call(tool_name, args, **kwargs):
     from .backend_client import get_backend_client
     client = get_backend_client()
+
+    # Emit NEURON_SPAWNED for each task in a delegate_task call
+    if tool_name == "delegate_task":
+        tasks = args.get("tasks") or []
+        for task in tasks:
+            neuron_id = task.get("role") or task.get("neuron_id") or task.get("name", "neuron")
+            await client.post_async("/telemetry/stream-event", {
+                "darwin_id": client.darwin_id,
+                "session_id": client.session_id,
+                "event_type": "NEURON_SPAWNED",
+                "neuron_id": neuron_id,
+                "payload": {
+                    "neuron_id": neuron_id,
+                    "task": str(task.get("task") or task.get("directive") or "")[:500],
+                    "parent_event_id": "",
+                    "model": task.get("model", "claude-sonnet-4-6"),
+                    "model_reason": task.get("model_reason"),
+                },
+                "timestamp_ms": int(time.time() * 1000),
+            })
+
     await client.post_async("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
@@ -209,6 +248,28 @@ def _redact_str(s: str) -> str:
     s = re.sub(r"eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+", "[REDACTED]", s)
     s = re.sub(r"\b\d{13,19}\b", "[REDACTED]", s)   # PAN
     return s
+
+
+def _extract_response_text(response) -> str:
+    """Extract plain text from an LLM response object (Anthropic / OpenAI shapes)."""
+    if response is None:
+        return ""
+    # Anthropic: response.content is a list of content blocks
+    if hasattr(response, "content") and isinstance(response.content, list):
+        parts = []
+        for block in response.content:
+            if hasattr(block, "text"):
+                parts.append(block.text)
+        return " ".join(parts)
+    # OpenAI: response.choices[0].message.content
+    if hasattr(response, "choices") and response.choices:
+        msg = response.choices[0].message
+        if hasattr(msg, "content") and msg.content:
+            return msg.content
+    # Plain string fallback
+    if isinstance(response, str):
+        return response
+    return str(response)[:500]
 
 
 def _get_memory_mb() -> int:
