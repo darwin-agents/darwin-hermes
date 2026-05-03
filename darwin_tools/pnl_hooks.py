@@ -66,7 +66,7 @@ async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **
     out_tok = usage.get("output_tokens", 0)
     cache_read = usage.get("cache_read_input_tokens", 0)
     reasoning = usage.get("reasoning_tokens", 0)
-    cost = _estimate_cost(model, in_tok + cache_read // 10, out_tok)
+    cost = _estimate_cost(model, in_tok, out_tok, cache_read_tokens=cache_read)
     provider = _model_to_provider(model)
 
     _token_running_total += in_tok + out_tok
@@ -215,26 +215,46 @@ async def _on_session_end(**kwargs):
 # Helpers
 # ---------------------------------------------------------------------------
 
-_MODEL_COSTS = {
-    "claude-opus-4-7":           (15.00, 75.00),
-    "claude-sonnet-4-6":         (3.00,  15.00),
-    "claude-haiku-4-5-20251001": (0.25,  1.25),
-    "gpt-4o":                    (2.50,  10.00),
-    "gpt-4o-mini":               (0.15,  0.60),
-}
-
-
 def _model_to_provider(model: str) -> str:
+    """
+    Return a provider label for telemetry.
+    Handles both native ids ('claude-opus-4-7') and OpenRouter-style
+    prefixed ids ('anthropic/claude-opus-4-7', 'google/gemini-3-flash').
+    """
+    if "/" in model:
+        prefix = model.split("/")[0].lower()
+        if prefix in ("anthropic", "openai", "google", "meta", "mistral", "cohere"):
+            return prefix
+        return "openrouter"
     if model.startswith("claude"):
         return "anthropic"
-    if model.startswith("gpt") or model.startswith("o3") or model.startswith("o1"):
+    if model.startswith(("gpt-", "o1-", "o3-", "o4-")):
         return "openai"
     return "openrouter"
 
 
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    inp_rate, out_rate = _MODEL_COSTS.get(model, (3.00, 15.00))
-    return (input_tokens * inp_rate + output_tokens * out_rate) / 1_000_000
+def _estimate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+) -> float:
+    """
+    Resolve per-token pricing from LiteLLM's bundled model_cost.json.
+    LiteLLM updates its price table with each release — no hardcoded rates here.
+    Returns 0.0 for unknown models rather than silently using a wrong default.
+    """
+    try:
+        import litellm
+        prompt_cost, completion_cost = litellm.cost_per_token(
+            model=model,
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            cache_read_input_tokens=cache_read_tokens,
+        )
+        return prompt_cost + completion_cost
+    except Exception:
+        return 0.0
 
 
 def _redact(args: dict) -> str:
