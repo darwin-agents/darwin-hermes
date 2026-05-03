@@ -5,10 +5,22 @@ Invariants:
 - Hooks register in correct order (pre before post)
 - _redact_str strips API keys, JWTs, and PANs
 - _estimate_cost returns sensible values
+- _extract_response_text handles Anthropic / OpenAI / str / None shapes
+- _post_llm_call emits a THOUGHT event with model, tokens, latency
+- _pre_tool_call emits NEURON_SPAWNED per task when tool is delegate_task
 """
 
+import json
+
 import pytest
-from darwin_tools.pnl_hooks import _redact_str, _estimate_cost, register_pnl_hooks
+from darwin_tools.pnl_hooks import (
+    _estimate_cost,
+    _extract_response_text,
+    _post_llm_call,
+    _pre_tool_call,
+    _redact_str,
+    register_pnl_hooks,
+)
 
 
 def test_redact_strips_anthropic_key():
@@ -63,3 +75,213 @@ def test_hooks_are_callable(ctx):
     for event, handlers in ctx.hooks.items():
         for h in handlers:
             assert callable(h), f"Hook {event} is not callable"
+
+
+# ---------------------------------------------------------------------------
+# _extract_response_text
+# ---------------------------------------------------------------------------
+
+class _Block:
+    """Minimal Anthropic content block stub."""
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _AnthropicResponse:
+    def __init__(self, *texts: str):
+        self.content = [_Block(t) for t in texts]
+
+
+class _OpenAIMessage:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class _OpenAIChoice:
+    def __init__(self, content: str):
+        self.message = _OpenAIMessage(content)
+
+
+class _OpenAIResponse:
+    def __init__(self, content: str):
+        self.choices = [_OpenAIChoice(content)]
+
+
+def test_extract_anthropic_single_block():
+    resp = _AnthropicResponse("I will browse competitor pricing.")
+    assert _extract_response_text(resp) == "I will browse competitor pricing."
+
+
+def test_extract_anthropic_multiple_blocks():
+    resp = _AnthropicResponse("First.", "Second.")
+    result = _extract_response_text(resp)
+    assert "First." in result
+    assert "Second." in result
+
+
+def test_extract_openai_shape():
+    resp = _OpenAIResponse("Analysing revenue data.")
+    assert _extract_response_text(resp) == "Analysing revenue data."
+
+
+def test_extract_plain_string():
+    assert _extract_response_text("plain text") == "plain text"
+
+
+def test_extract_none_returns_empty():
+    assert _extract_response_text(None) == ""
+
+
+def test_extract_empty_content_list():
+    resp = _AnthropicResponse()  # no blocks
+    assert _extract_response_text(resp) == ""
+
+
+# ---------------------------------------------------------------------------
+# _post_llm_call — THOUGHT event emission
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_post_llm_call_emits_thought_event(backend_mock):
+    captured: list[dict] = []
+
+    async def capture(request, route):
+        captured.append(json.loads(request.content))
+        return __import__("httpx").Response(200, json={"event_id": "ev-1"})
+
+    backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
+    backend_mock.post("/api/v1/telemetry/llm-call").mock(
+        return_value=__import__("httpx").Response(201, json={"recorded": True})
+    )
+    backend_mock.post("/api/v1/telemetry/stream").mock(
+        return_value=__import__("httpx").Response(202, json={"queued": True})
+    )
+
+    response = _AnthropicResponse("I will spawn two researcher neurons.")
+    await _post_llm_call(
+        response=response,
+        usage={"input_tokens": 1200, "output_tokens": 90, "cache_read_input_tokens": 0, "reasoning_tokens": 0},
+        model="claude-sonnet-4-6",
+        duration_ms=980,
+    )
+
+    thought_events = [e for e in captured if e.get("event_type") == "THOUGHT"]
+    assert len(thought_events) == 1
+    payload = thought_events[0]["payload"]
+    assert payload["model"] == "claude-sonnet-4-6"
+    assert payload["prompt_tokens"] == 1200
+    assert payload["completion_tokens"] == 90
+    assert payload["latency_ms"] == 980
+    assert "I will spawn two researcher neurons." in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_post_llm_call_thought_model_always_set(backend_mock):
+    """model must be present in every THOUGHT event regardless of token counts."""
+    captured: list[dict] = []
+
+    async def capture(request, route):
+        captured.append(json.loads(request.content))
+        return __import__("httpx").Response(200, json={"event_id": "ev-2"})
+
+    backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
+    backend_mock.post("/api/v1/telemetry/llm-call").mock(
+        return_value=__import__("httpx").Response(201, json={"recorded": True})
+    )
+    backend_mock.post("/api/v1/telemetry/stream").mock(
+        return_value=__import__("httpx").Response(202, json={"queued": True})
+    )
+
+    await _post_llm_call(
+        response=None,
+        usage={"input_tokens": 0, "output_tokens": 0},
+        model="claude-haiku-4-5",
+        duration_ms=0,
+    )
+
+    thought_events = [e for e in captured if e.get("event_type") == "THOUGHT"]
+    assert thought_events[0]["payload"]["model"] == "claude-haiku-4-5"
+
+
+# ---------------------------------------------------------------------------
+# _pre_tool_call — NEURON_SPAWNED emission for delegate_task
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_pre_tool_call_emits_neuron_spawned_per_task(backend_mock):
+    captured: list[dict] = []
+
+    async def capture(request, route):
+        captured.append(json.loads(request.content))
+        return __import__("httpx").Response(200, json={"event_id": "ev-3"})
+
+    backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
+
+    await _pre_tool_call(
+        tool_name="delegate_task",
+        args={
+            "tasks": [
+                {
+                    "role": "researcher_A",
+                    "task": "Scrape competitor pricing",
+                    "model": "claude-haiku-4-5",
+                    "model_reason": "Repetitive extraction — Haiku sufficient",
+                },
+                {
+                    "role": "researcher_B",
+                    "task": "Scrape supplier contacts",
+                    "model": "claude-haiku-4-5",
+                },
+            ]
+        },
+    )
+
+    spawned = [e for e in captured if e.get("event_type") == "NEURON_SPAWNED"]
+    assert len(spawned) == 2
+
+    neuron_ids = {e["payload"]["neuron_id"] for e in spawned}
+    assert neuron_ids == {"researcher_A", "researcher_B"}
+
+    first = next(e for e in spawned if e["payload"]["neuron_id"] == "researcher_A")
+    assert first["payload"]["model"] == "claude-haiku-4-5"
+    assert first["payload"]["model_reason"] == "Repetitive extraction — Haiku sufficient"
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_call_defaults_model_to_sonnet(backend_mock):
+    """When a task spec has no model, default to claude-sonnet-4-6."""
+    captured: list[dict] = []
+
+    async def capture(request, route):
+        captured.append(json.loads(request.content))
+        return __import__("httpx").Response(200, json={"event_id": "ev-4"})
+
+    backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
+
+    await _pre_tool_call(
+        tool_name="delegate_task",
+        args={"tasks": [{"role": "analyst", "task": "Summarise research"}]},
+    )
+
+    spawned = [e for e in captured if e.get("event_type") == "NEURON_SPAWNED"]
+    assert spawned[0]["payload"]["model"] == "claude-sonnet-4-6"
+    assert spawned[0]["payload"]["model_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_call_non_delegate_no_neuron_spawned(backend_mock):
+    """Non-delegate_task calls must NOT emit NEURON_SPAWNED."""
+    captured: list[dict] = []
+
+    async def capture(request, route):
+        captured.append(json.loads(request.content))
+        return __import__("httpx").Response(200, json={"event_id": "ev-5"})
+
+    backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
+
+    await _pre_tool_call(tool_name="web_search", args={"query": "competitor pricing"})
+
+    spawned = [e for e in captured if e.get("event_type") == "NEURON_SPAWNED"]
+    assert len(spawned) == 0
+    tool_calls = [e for e in captured if e.get("event_type") == "TOOL_CALL"]
+    assert len(tool_calls) == 1
