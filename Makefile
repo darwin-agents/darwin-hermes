@@ -7,7 +7,7 @@ PYTEST_ARGS ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help submodule sync hermes editable setup test deploy clean upgrade-hermes
+.PHONY: help install submodule sync hermes editable setup test deploy clean upgrade-hermes
 
 help: ## Show this help
 	@echo "Darwin agent (uv + Modal)"
@@ -19,6 +19,8 @@ submodule: ## Init/update Hermes git submodule (hermes-core)
 
 sync: ## uv sync with dev extras (pytest stack; see pyproject optional-dependencies)
 	$(UV) sync --extra dev
+
+install: sync ## Same as sync (Hermes + plugin: make setup)
 
 hermes: ## Editable install Hermes from submodule (run after submodule)
 	$(UV) pip install -e "hermes-core[all]"

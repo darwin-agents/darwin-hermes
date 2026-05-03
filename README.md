@@ -99,7 +99,7 @@ cp .env.example .env
 
 ## Makefile
 
-From `darwin-agent/`, run **`make help`**. Targets include **`make setup`** (ordered: submodule init/update, `uv sync --extra dev`, `uv pip install -e hermes-core[all]`, `uv pip install -e .`), **`make sync`**, **`make submodule`**, **`make hermes`**, **`make editable`**, **`make test`** (optional `PYTEST_ARGS="…"`), **`make deploy`** (`modal deploy`; override entry file with `MODAL_APP=…`), **`make clean`**, and **`make upgrade-hermes`** (submodule track remote, `uv sync --extra dev`, reinstall editable Hermes). Override **`UV`** if your `uv` binary is not on `PATH`.
+From `darwin-agent/`, run **`make help`**. Targets include **`make setup`** (ordered: submodule init/update, `uv sync --extra dev`, `uv pip install -e hermes-core[all]`, `uv pip install -e .`), **`make install`** / **`make sync`**, **`make submodule`**, **`make hermes`**, **`make editable`**, **`make test`** (optional `PYTEST_ARGS="…"`), **`make deploy`** (`modal deploy`; override entry file with `MODAL_APP=…`), **`make clean`**, and **`make upgrade-hermes`** (submodule track remote, `uv sync --extra dev`, reinstall editable Hermes). Override **`UV`** if your `uv` binary is not on `PATH`.
 
 ---
 
