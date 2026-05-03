@@ -84,6 +84,12 @@ def run_agent(
     vcc_ref is the per-Darwin opaque token for VCC injection — never the raw PAN.
     Modal mounts the Volume → we bootstrap env → Hermes takes over.
     """
+    # Validate required args early with clear errors
+    for name, val in [("darwin_id", darwin_id), ("session_id", session_id),
+                      ("agent_jwt", agent_jwt), ("backend_url", backend_url)]:
+        if not val:
+            raise ValueError(f"run_agent: required argument '{name}' is empty")
+
     import asyncio
     asyncio.run(_run_agent_async(darwin_id, session_id, wake_prompt, agent_jwt, backend_url, vcc_ref))
 
@@ -97,6 +103,9 @@ async def _run_agent_async(
     vcc_ref: str = "",
 ) -> None:
     volume = get_volume(darwin_id)
+    # volume.mount() is used instead of @app.function(volumes=...) because
+    # the volume name is dynamic (one per Darwin).  This is the documented
+    # Modal pattern for runtime-resolved volumes.
     with volume.mount("/data"):
         hermes_home = Path("/data/hermes_home")
         hermes_home.mkdir(parents=True, exist_ok=True)
@@ -179,65 +188,74 @@ async def _execute_hibernation(
     import json
     import sqlite3
     import httpx
-    from datetime import datetime, timedelta
+    from datetime import datetime, timezone, timedelta
 
     base = backend_url.rstrip("/") + "/api/v1"
     headers = {"Authorization": f"Bearer {agent_jwt}"}
 
-    # Step 1: Sync any unsynced darwin_entities — best effort
+    # Step 1: Sync any unsynced darwin_entities — best effort with retry
     db_path = hermes_home / "state.db"
     if db_path.exists():
         conn = sqlite3.connect(db_path)
         rows = conn.execute(
             "SELECT id, entity_type, data FROM darwin_entities WHERE synced_at IS NULL"
         ).fetchall()
-        for entity_id, etype, data in rows:
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    await client.post(
-                        f"{base}/telemetry/entity",
-                        json={
-                            "darwin_id": darwin_id,
-                            "session_id": session_id,
-                            "entity_type": etype,
-                            "entity_id": entity_id,
-                            "data": json.loads(data),
-                            "operation": "UPSERT",
-                        },
-                        headers=headers,
-                    )
-                conn.execute(
-                    "UPDATE darwin_entities SET synced_at = ? WHERE id = ?",
-                    (int(datetime.utcnow().timestamp()), entity_id),
-                )
-                conn.commit()
-            except Exception:
-                pass  # retried on next session
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for entity_id, etype, data in rows:
+                for attempt in range(3):
+                    try:
+                        await client.post(
+                            f"{base}/telemetry/entity",
+                            json={
+                                "darwin_id": darwin_id,
+                                "session_id": session_id,
+                                "entity_type": etype,
+                                "entity_id": entity_id,
+                                "data": json.loads(data),
+                                "operation": "UPSERT",
+                            },
+                            headers=headers,
+                        )
+                        conn.execute(
+                            "UPDATE darwin_entities SET synced_at = ? WHERE id = ?",
+                            (int(datetime.now(timezone.utc).timestamp()), entity_id),
+                        )
+                        conn.commit()
+                        break  # success — move to next entity
+                    except Exception:
+                        if attempt == 2:
+                            pass  # retried on next session
         conn.close()
 
-    # Step 2: Register wake trigger
+    # Step 2: Register wake trigger (with retry)
     wake_trigger: dict = {}
     if sig.wake_after_hours:
         wake_trigger = {
             "type": "CRON",
             "trigger_at": (
-                datetime.utcnow() + timedelta(hours=sig.wake_after_hours)
+                datetime.now(timezone.utc) + timedelta(hours=sig.wake_after_hours)
             ).isoformat(),
         }
     elif sig.wake_on_webhook:
         wake_trigger = {"type": "WEBHOOK", "webhook_key": sig.wake_on_webhook}
 
     async with httpx.AsyncClient(timeout=10.0) as client:
-        await client.post(
-            f"{base}/darwins/{darwin_id}/hibernate",
-            json={
-                "session_id": session_id,
-                "reason": sig.reason,
-                "wake_trigger": wake_trigger,
-                "browserbase_session_id": sig.keep_browser_session,
-            },
-            headers=headers,
-        )
+        for attempt in range(3):
+            try:
+                await client.post(
+                    f"{base}/darwins/{darwin_id}/hibernate",
+                    json={
+                        "session_id": session_id,
+                        "reason": sig.reason,
+                        "wake_trigger": wake_trigger,
+                        "browserbase_session_id": sig.keep_browser_session,
+                    },
+                    headers=headers,
+                )
+                break
+            except Exception:
+                if attempt == 2:
+                    pass  # best effort
 
         # Step 3: Final canvas event
         await client.post(
@@ -252,7 +270,7 @@ async def _execute_hibernation(
                     "wake_trigger_at": wake_trigger.get("trigger_at"),
                     "browserbase_kept_alive": sig.keep_browser_session is not None,
                 },
-                "timestamp_ms": int(datetime.utcnow().timestamp() * 1000),
+                "timestamp_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
             },
             headers=headers,
         )
