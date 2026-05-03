@@ -32,8 +32,8 @@ venv/
 .modal/
 modal_cache/
 
-# LangSmith / tracing
-.langsmith/
+# Langfuse (traces are remote)
+.langfuse/
 
 # OS
 .DS_Store

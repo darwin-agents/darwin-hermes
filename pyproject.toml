@@ -1,6 +1,6 @@
 [project]
 name = "darwin-agent"
-version = "0.2.0"
+version = "0.2.1"
 requires-python = ">=3.11"
 dependencies = [
     # Modal serverless
@@ -36,7 +36,12 @@ dev = [
 ]
 
 [tool.uv]
-package = false
+# Note: we intentionally do NOT set `package = false` here because
+# darwin_tools must be installed as a package for entry-point discovery
+# (hermes_agent.plugins) to work.  Local dev: `uv pip install -e .`
+
+[tool.setuptools.package-data]
+darwin_tools = ["py.typed", "plugin.yaml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
