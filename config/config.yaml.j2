@@ -14,9 +14,24 @@ terminal:
   container_disk: 51200
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 
-# --- Browser backend: Browserbase stealth sessions ---
+# --- Browser backends: three-layer strategy ---
+#
+# Layer 1 — Lightpanda / agent-browser CLI (local, Fetch mode, auto-installed by Hermes)
+#   For open pages, public APIs, RSS feeds.  No screenshots.  11× faster than Chrome.
+#   Activated automatically for private / LAN URLs when auto_local_for_private_urls is true.
+#
+# Layer 2 — Browserbase (primary cloud Session mode)
+#   For all authenticated flows, VCC injection, CAPTCHA handoff, and hibernation-resume.
+#   Required for /sessions/{id}/stream WebSocket relay and browserbase_service VCC inject.
+#   Keep as primary until Hermes issue #11020 (Browser-use per-turn cleanup) is resolved.
+#
+# Layer 3 — Browser-use Cloud (stealth fallback, activated by BROWSER_USE_API_KEY in env)
+#   For targets that block Browserbase (Cloudflare, Datadome, PerimeterX).
+#   Hermes retries the tool call via Browser-use when it detects a Browserbase block.
+#   No config change needed here — presence of BROWSER_USE_API_KEY enables the fallback.
 browser:
-  backend: browserbase
+  cloud_provider: browserbase
+  auto_local_for_private_urls: true
 
 # --- Working memory ---
 memory:
