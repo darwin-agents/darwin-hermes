@@ -63,3 +63,16 @@ def test_tool_schemas_have_required_fields(ctx):
         params = schema.get("parameters", {})
         assert params.get("type") == "object", f"{name}: parameters.type must be 'object'"
         assert "properties" in params, f"{name}: parameters missing 'properties'"
+
+
+def test_register_raises_on_missing_env_vars(ctx):
+    """R12: register() must fail fast if required env vars are missing."""
+    import os
+    saved = os.environ.pop("DARWIN_BACKEND_URL", None)
+    try:
+        with pytest.raises(EnvironmentError, match="DARWIN_BACKEND_URL"):
+            register(ctx)
+    finally:
+        if saved is not None:
+            os.environ["DARWIN_BACKEND_URL"] = saved
+

@@ -121,7 +121,7 @@ Before every LLM call, select the cheapest model capable of the task:
 |------------------------------------------------|------------------------|
 | Repetitive extraction, simple classification   | claude-haiku-4-5       |
 | General reasoning, planning, tool calls        | claude-sonnet-4-6      |
-| Complex strategy, multi-step synthesis         | claude-opus-4-6        |
+| Complex strategy, multi-step synthesis         | claude-opus-4-7        |
 | Vision-heavy tasks (JS apps, complex UIs)      | gpt-4o                 |
 | Fast vision checks, screenshot classification  | gpt-4o-mini            |
 

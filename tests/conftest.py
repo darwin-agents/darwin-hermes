@@ -19,10 +19,19 @@ def hermes_home_env(tmp_path):
     os.environ["DARWIN_AGENT_JWT"] = "test-jwt"
     os.environ["DARWIN_BACKEND_URL"] = "http://test-backend"
     os.environ["DARWIN_VCC_REF"] = "vcc_ref_test"
+    os.environ["DARWIN_WAKE_PROMPT"] = "Test wake prompt"
     yield
     # Reset singletons between tests
     import darwin_tools.backend_client as bc
-    bc._client = None
+    if bc._client is not None:
+        # The persistent httpx.AsyncClient must be closed before reset.
+        # In sync test teardown we can't await, so we close the transport directly.
+        try:
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(bc._client.close())
+        except Exception:
+            pass
+        bc._client = None
     import darwin_tools.entities as ent
     if ent._conn is not None:
         ent._conn.close()
@@ -60,6 +69,9 @@ def backend_mock():
         router.post("/api/v1/telemetry/stream").mock(
             return_value=httpx.Response(202, json={"queued": True})
         )
+        router.post("/api/v1/telemetry/llm-call").mock(
+            return_value=httpx.Response(201, json={"recorded": True})
+        )
         router.get("/api/v1/assets/presigned-url").mock(
             return_value=httpx.Response(200, json={
                 "upload_url": "http://storage/upload",
@@ -93,3 +105,4 @@ class FakeCtx:
 @pytest.fixture
 def ctx():
     return FakeCtx()
+

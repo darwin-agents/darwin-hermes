@@ -55,6 +55,7 @@ darwin-agent/
 │   └── config.yaml.j2              # Hermes config template rendered per session
 │
 ├── modal_app.py                    # Modal entrypoint — boot sequence
+├── Makefile                        # uv / submodule / Modal shortcuts (`make help`)
 ├── pyproject.toml                  # hermes-agent dep + darwin entry point
 └── uv.lock
 ```
@@ -74,18 +75,31 @@ darwin-agent/
 ```bash
 git clone <repo>
 cd darwin-agent
-git submodule update --init --recursive   # pull NousResearch/hermes-agent
-
-uv sync                                   # install from uv.lock
-uv pip install -e hermes-core[all]        # install Hermes from submodule
 ```
 
-Copy `.env.example` → `.env`:
+**Recommended:** run a full dev install with the [Makefile](#makefile), then copy env:
 
 ```bash
+make setup          # submodule + uv sync --extra dev + editable Hermes + editable darwin_tools
 cp .env.example .env
 # Fill in ANTHROPIC_API_KEY, DARWIN_BACKEND_URL, etc.
 ```
+
+**Manual (same as `make setup`):**
+
+```bash
+git submodule update --init --recursive   # pull NousResearch/hermes-agent
+uv sync --extra dev                       # lockfile + optional dev deps (pytest stack)
+uv pip install -e hermes-core[all]        # Hermes from submodule
+uv pip install -e .                       # darwin_tools entry point (see pyproject.toml)
+cp .env.example .env
+```
+
+---
+
+## Makefile
+
+From `darwin-agent/`, run **`make help`**. Targets include **`make setup`** (ordered: submodule init/update, `uv sync --extra dev`, `uv pip install -e hermes-core[all]`, `uv pip install -e .`), **`make sync`**, **`make submodule`**, **`make hermes`**, **`make editable`**, **`make test`** (optional `PYTEST_ARGS="…"`), **`make deploy`** (`modal deploy`; override entry file with `MODAL_APP=…`), **`make clean`**, and **`make upgrade-hermes`** (submodule track remote, `uv sync --extra dev`, reinstall editable Hermes). Override **`UV`** if your `uv` binary is not on `PATH`.
 
 ---
 
@@ -170,7 +184,8 @@ God Layer spawns Modal container
 ## Deployment
 
 ```bash
-modal deploy modal_app.py
+make deploy
+# same as: modal deploy modal_app.py
 ```
 
 Create the Modal secret once:
@@ -179,15 +194,16 @@ Create the Modal secret once:
 modal secret create darwin-agent-secrets \
   ANTHROPIC_API_KEY=... \
   OPENROUTER_API_KEY=... \
-  AGENT_JWT_SECRET=... \
   BROWSERBASE_API_KEY=... \
   BROWSERBASE_PROJECT_ID=... \
-  MODAL_TOKEN_ID=... \
-  MODAL_TOKEN_SECRET=... \
   HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-... \
   HERMES_LANGFUSE_SECRET_KEY=sk-lf-... \
   HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
+
+> **Not in the Modal secret:**
+> - `AGENT_JWT_SECRET` — backend-only signing key; the agent never reads it
+> - `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` — deploy-time credentials for your machine/CI only
 
 ---
 
@@ -204,10 +220,8 @@ modal secret create darwin-agent-secrets \
 ## Upgrading Hermes
 
 ```bash
-git submodule update --remote hermes-core
-uv sync
-# Run integration tests
-# If something breaks, pin to last stable tag:
+make upgrade-hermes    # remote submodule + uv sync --extra dev + uv pip install -e hermes-core[all]
+make test              # integration tests; if something breaks, pin the submodule:
 git -C hermes-core checkout <stable-tag>
 ```
 

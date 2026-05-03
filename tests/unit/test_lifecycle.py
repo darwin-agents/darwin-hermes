@@ -107,3 +107,21 @@ async def test_request_approval_posts_notification(tools, backend_mock):
     assert len(sent) == 1
     assert "25.00" in sent[0]["message"]
     assert sent[0]["action_type"] == "APPROVAL"
+
+
+@pytest.mark.asyncio
+async def test_request_approval_includes_webhook_key_in_payload(tools, backend_mock):
+    """B2 fix: webhook_key must be sent to the backend so it can route the approval."""
+    import json
+    sent = []
+    async def capture(request, route):
+        sent.append(json.loads(request.content))
+        return __import__("httpx").Response(200, json={"ok": True})
+    backend_mock.post("/api/v1/notifications/send").mock(side_effect=capture)
+
+    result = await tools["request_approval"]({"amount": 30.00, "justification": "test"})
+    webhook_key = result["webhook_key"]
+
+    assert "webhook_key" in sent[0], "webhook_key missing from notification payload"
+    assert sent[0]["webhook_key"] == webhook_key
+

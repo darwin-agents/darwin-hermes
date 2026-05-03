@@ -140,5 +140,7 @@ Initial implementation of the Phase 1 MVP spec.
 - `uv.lock` — pinned lockfile (74 packages)
 - Modal image build uses `uv pip install --system` throughout; `requirements.txt` removed
 
-[Unreleased]: https://github.com/darwin-agents/darwin-agent/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/darwin-agents/darwin-agent/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/darwin-agents/darwin-agent/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/darwin-agents/darwin-agent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/darwin-agents/darwin-agent/releases/tag/v0.1.0

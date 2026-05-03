@@ -113,3 +113,48 @@ async def test_inject_payment_request_contains_no_card_digits(tools, backend_moc
     })
     for body in calls:
         assert not re.search(r"\b\d{13,19}\b", body), f"PAN found in request: {body}"
+
+
+# ---------------------------------------------------------------------------
+# B1: Division-by-zero when initial_budget is 0
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_check_ledger_zero_budget_no_crash(tools, backend_mock):
+    backend_mock.get("/api/v1/finance/ledger/test-darwin-01").mock(
+        return_value=httpx.Response(200, json={
+            "current_balance": 0.0,
+            "initial_budget": 0,
+            "transactions": [],
+        })
+    )
+    result = await tools["check_ledger"]({})
+    assert result["pct_remaining"] == 0.0
+    assert result["balance"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# S1: inject_payment balance pre-flight check
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_inject_payment_rejects_insufficient_balance(tools, backend_mock):
+    """inject_payment must return an error when amount > current balance."""
+    backend_mock.get("/api/v1/finance/ledger/test-darwin-01").mock(
+        return_value=httpx.Response(200, json={
+            "current_balance": 10.00,
+            "initial_budget": 100.00,
+            "transactions": [],
+        })
+    )
+    result = await tools["inject_payment"]({
+        "browserbase_session_id": "bb_3",
+        "merchant_name": "ExpensiveShop",
+        "amount": 50.00,
+        "pan_element": "#p",
+        "cvv_element": "#c",
+        "expiry_element": "#e",
+    })
+    assert result["error"] == "INSUFFICIENT_BALANCE"
+    assert "50.00" in result["message"]
+
