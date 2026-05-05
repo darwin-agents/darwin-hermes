@@ -67,19 +67,40 @@ def _on_session_start(**kwargs):
     })
 
 
-def _pre_llm_call(messages, model, **kwargs):
-    """Stamp the start so post_llm_call can measure latency."""
-    pass  # Langfuse handles real tracing; we just need the post hook
+def _pre_llm_call(**kwargs):
+    """Hermes fires ``pre_llm_call`` with keyword args only (see ``run_agent``)."""
+    pass
 
 
-def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **kwargs):
-    """Record token burn to both the LLM cost tracker and the metrics stream."""
+def _post_llm_call(**kwargs):
+    """
+    Record token burn + canvas THOUGHT events.
+
+    Hermes ``post_llm_call`` passes ``assistant_response``, ``conversation_history``,
+    ``model``, etc. — never positional ``(response, usage)``.  Older tests may still
+    pass ``response=`` / ``usage=``; both shapes are accepted.
+    """
     global _token_running_total, _cost_running_total
 
-    in_tok = usage.get("input_tokens", 0)
-    out_tok = usage.get("output_tokens", 0)
-    cache_read = usage.get("cache_read_input_tokens", 0)
-    reasoning = usage.get("reasoning_tokens", 0)
+    model = (kwargs.get("model") or "").strip()
+    assistant_response = kwargs.get("assistant_response")
+    legacy_response = kwargs.get("response")
+    raw_text = assistant_response if assistant_response is not None else legacy_response
+
+    usage = kwargs.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
+
+    duration_ms = int(kwargs.get("duration_ms") or 0)
+    turn_id = kwargs.get("turn_id")
+
+    in_tok = int(usage.get("input_tokens", 0) or 0)
+    out_tok = int(usage.get("output_tokens", 0) or 0)
+    cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+    reasoning = int(usage.get("reasoning_tokens", 0) or 0)
+
+    # Hermes does not attach a usage dict to this hook — keep zeros unless tests
+    # or another integration passes explicit ``usage=``.
     cost = _estimate_cost(model, in_tok, out_tok, cache_read_tokens=cache_read)
     provider = _model_to_provider(model)
     request_id = str(usage.get("request_id") or uuid.uuid4())
@@ -100,7 +121,7 @@ def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **kwargs
     client = get_backend_client()
 
     # 1. THOUGHT canvas event — surfaces every cognitive turn on the Infinite Canvas
-    content = _extract_response_text(response)
+    content = _extract_response_text(raw_text)
     client.post_sync("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
