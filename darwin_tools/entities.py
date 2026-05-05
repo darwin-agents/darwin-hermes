@@ -83,7 +83,7 @@ _schema_save_entity = {
 }
 
 
-async def _handle_save_entity(params: dict) -> dict:
+async def _handle_save_entity(params: dict, **kwargs) -> dict:
     entity_type = params["entity_type"]
     entity_id = params["entity_id"]
     data = params["data"]

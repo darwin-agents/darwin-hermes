@@ -86,7 +86,7 @@ _schema_hibernate = {
 }
 
 
-async def _handle_hibernate(params: dict) -> None:
+async def _handle_hibernate(params: dict, **kwargs) -> None:
     raise DarwinHibernateSignal(
         reason=params["reason"],
         wake_after_hours=params.get("wake_after_hours"),
@@ -125,7 +125,7 @@ _schema_request_approval = {
 }
 
 
-async def _handle_request_approval(params: dict) -> dict:
+async def _handle_request_approval(params: dict, **kwargs) -> dict:
     """
     Returns: { "webhook_key": str }
     The agent must immediately call hibernate(wake_on_webhook=webhook_key).

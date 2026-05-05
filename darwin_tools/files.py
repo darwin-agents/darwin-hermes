@@ -50,7 +50,7 @@ _schema_upload_file = {
 }
 
 
-async def _handle_upload_file(params: dict) -> dict:
+async def _handle_upload_file(params: dict, **kwargs) -> dict:
     from .backend_client import get_backend_client
     client = get_backend_client()
 

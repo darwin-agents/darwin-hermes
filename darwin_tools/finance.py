@@ -49,18 +49,19 @@ _schema_check_ledger = {
 }
 
 
-async def _handle_check_ledger(params: dict) -> dict:
+async def _handle_check_ledger(params: dict, **kwargs) -> dict:
     from .backend_client import get_backend_client
     client = get_backend_client()
     resp = await client.get(f"/finance/ledger/{client.darwin_id}")
-    balance = resp["current_balance"]
-    budget = resp["initial_budget"]
+    balance = float(resp.get("current_balance", 0) or 0)
+    budget = float(resp.get("initial_budget", 0) or 0)
     pct = round(balance / budget * 100, 1) if budget else 0.0
+    txs = resp.get("transactions") or []
     return {
         "balance": balance,
         "initial_budget": budget,
         "pct_remaining": pct,
-        "recent_transactions": resp["transactions"][:5],
+        "recent_transactions": txs[:5],
     }
 
 
@@ -97,7 +98,7 @@ _schema_record_expense = {
 }
 
 
-async def _handle_record_expense(params: dict) -> dict:
+async def _handle_record_expense(params: dict, **kwargs) -> dict:
     from .backend_client import get_backend_client
     client = get_backend_client()
     resp = await client.post("/finance/ledger/update", {
@@ -144,7 +145,7 @@ _schema_inject_payment = {
 }
 
 
-async def _handle_inject_payment(params: dict) -> dict:
+async def _handle_inject_payment(params: dict, **kwargs) -> dict:
     """Agent never sees raw PAN/CVV — backend handles decryption + WebSocket injection."""
     from .backend_client import get_backend_client
     client = get_backend_client()

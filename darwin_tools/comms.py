@@ -41,7 +41,7 @@ _schema_send_email = {
 }
 
 
-async def _handle_send_email(params: dict) -> dict:
+async def _handle_send_email(params: dict, **kwargs) -> dict:
     from .backend_client import get_backend_client
     client = get_backend_client()
     return await client.post("/comms/send-email", {

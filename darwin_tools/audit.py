@@ -51,7 +51,7 @@ _schema_log_decision = {
 }
 
 
-async def _handle_log_decision(params: dict) -> dict:
+async def _handle_log_decision(params: dict, **kwargs) -> dict:
     from .backend_client import get_backend_client
     client = get_backend_client()
 
