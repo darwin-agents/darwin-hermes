@@ -13,7 +13,13 @@ import httpx
 
 
 def register_files_tools(ctx) -> None:
-    ctx.register_tool("upload_file", _schema_upload_file, _handle_upload_file)
+    ctx.register_tool(
+        name="upload_file",
+        toolset="darwin",
+        schema=_schema_upload_file,
+        handler=_handle_upload_file,
+        is_async=True,
+    )
 
 
 _schema_upload_file = {

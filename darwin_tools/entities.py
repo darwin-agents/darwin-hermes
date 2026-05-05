@@ -44,7 +44,13 @@ def _get_db() -> sqlite3.Connection:
 
 
 def register_entities_tools(ctx) -> None:
-    ctx.register_tool("save_entity", _schema_save_entity, _handle_save_entity)
+    ctx.register_tool(
+        name="save_entity",
+        toolset="darwin",
+        schema=_schema_save_entity,
+        handler=_handle_save_entity,
+        is_async=True,
+    )
 
 
 _schema_save_entity = {

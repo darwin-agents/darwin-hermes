@@ -9,7 +9,13 @@ from __future__ import annotations
 
 
 def register_comms_tools(ctx) -> None:
-    ctx.register_tool("send_email", _schema_send_email, _handle_send_email)
+    ctx.register_tool(
+        name="send_email",
+        toolset="darwin",
+        schema=_schema_send_email,
+        handler=_handle_send_email,
+        is_async=True,
+    )
 
 
 _schema_send_email = {

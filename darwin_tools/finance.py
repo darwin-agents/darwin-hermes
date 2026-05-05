@@ -12,9 +12,27 @@ import os
 
 
 def register_finance_tools(ctx) -> None:
-    ctx.register_tool("check_ledger",   _schema_check_ledger,   _handle_check_ledger)
-    ctx.register_tool("record_expense", _schema_record_expense, _handle_record_expense)
-    ctx.register_tool("inject_payment", _schema_inject_payment, _handle_inject_payment)
+    ctx.register_tool(
+        name="check_ledger",
+        toolset="darwin",
+        schema=_schema_check_ledger,
+        handler=_handle_check_ledger,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="record_expense",
+        toolset="darwin",
+        schema=_schema_record_expense,
+        handler=_handle_record_expense,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="inject_payment",
+        toolset="darwin",
+        schema=_schema_inject_payment,
+        handler=_handle_inject_payment,
+        is_async=True,
+    )
 
 
 # ---------------------------------------------------------------------------

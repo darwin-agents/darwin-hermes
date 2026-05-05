@@ -32,8 +32,20 @@ class DarwinHibernateSignal(Exception):
 
 
 def register_lifecycle_tools(ctx) -> None:
-    ctx.register_tool("hibernate",         _schema_hibernate,         _handle_hibernate)
-    ctx.register_tool("request_approval",  _schema_request_approval,  _handle_request_approval)
+    ctx.register_tool(
+        name="hibernate",
+        toolset="darwin",
+        schema=_schema_hibernate,
+        handler=_handle_hibernate,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="request_approval",
+        toolset="darwin",
+        schema=_schema_request_approval,
+        handler=_handle_request_approval,
+        is_async=True,
+    )
 
 
 # ---------------------------------------------------------------------------

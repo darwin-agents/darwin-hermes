@@ -20,8 +20,10 @@ dependencies = [
 # It is NOT listed here as a regular dependency because it is a local
 # submodule, not a PyPI package — adding it here breaks uv build resolution.
 
+# Hermes calls ``entry_point.load()`` and expects a *module* with ``register(ctx)``.
+# ``darwin_tools:register`` loads the callable itself, so ``getattr(..., "register")`` fails.
 [project.entry-points."hermes_agent.plugins"]
-darwin = "darwin_tools:register"
+darwin = "darwin_tools"
 
 [tool.setuptools.packages.find]
 include = ["darwin_tools*"]

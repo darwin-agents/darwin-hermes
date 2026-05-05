@@ -3,13 +3,15 @@ Darwin Agent plugin — registers all proprietary tools and hooks with Hermes.
 
 Hermes discovers this via:
   [project.entry-points."hermes_agent.plugins"]
-  darwin = "darwin_tools:register"
+  darwin = "darwin_tools"
 
-and calls register(ctx) at session start.
+``importlib`` loads the **package**; Hermes then calls ``register(ctx)`` on that module.
+(Do not use ``darwin_tools:register`` — that loads only the callable and breaks discovery.)
 
 The rule: we never import from hermes-core internals.
 The only surface we touch is the documented ctx API:
-  ctx.register_tool(), ctx.register_hook(), ctx.register_command()
+  ctx.register_tool(name=..., toolset="darwin", schema=..., handler=..., is_async=True),
+  ctx.register_hook(), ctx.register_command()
 """
 
 from __future__ import annotations
@@ -38,7 +40,14 @@ _REQUIRED_ENV = ["DARWIN_BACKEND_URL", "DARWIN_AGENT_JWT", "DARWIN_ID", "DARWIN_
 class HermesPluginContext(Protocol):
     """Type stub for the Hermes plugin context API."""
 
-    def register_tool(self, name: str, schema: dict, handler: Callable) -> None: ...
+    def register_tool(
+        self,
+        name: str,
+        toolset: str,
+        schema: dict,
+        handler: Callable,
+        **kwargs: Any,
+    ) -> None: ...
     def register_hook(self, event: str, handler: Callable) -> None: ...
 
 

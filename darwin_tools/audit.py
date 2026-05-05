@@ -13,7 +13,13 @@ from __future__ import annotations
 
 
 def register_audit_tools(ctx) -> None:
-    ctx.register_tool("log_decision", _schema_log_decision, _handle_log_decision)
+    ctx.register_tool(
+        name="log_decision",
+        toolset="darwin",
+        schema=_schema_log_decision,
+        handler=_handle_log_decision,
+        is_async=True,
+    )
 
 
 _schema_log_decision = {
