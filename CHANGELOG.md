@@ -11,12 +11,17 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`check_ledger`:** tolerate a God Layer JSON body missing `initial_budget` / `transactions` (defensive parsing). The canonical fix is **`LedgerResponse`** on the backend including `initial_budget` so the field is no longer stripped at serialization.
 - **`modal_app.py` Hermes fallback:** import `asyncio` at module scope so `asyncio.to_thread(...)` works when `hermes_agent.python_library.run_session` is missing.
 - **Hermes plugin entry point:** `[project.entry-points."hermes_agent.plugins"]` now uses `darwin = "darwin_tools"` so `ep.load()` returns the package module (Hermes requires `register` on the loaded object; `darwin_tools:register` loaded only the callable and triggered “Plugin 'darwin' has no register() function”).
 - **OpenRouter ``No models provided``:** `_run_session_via_aiagent` passes explicit `provider` and `model` from `$HERMES_HOME/config.yaml` (with optional `OPENROUTER_MODEL` / `OPENROUTER_DEFAULT_MODEL` env overrides), because bare `AIAgent()` leaves `model` empty and Hermes drops the routed default during client init.
 - **Darwin plugin tool registration:** all `PluginContext.register_tool(...)` calls now pass Hermes’ positional `toolset` plus keyword `name` / `schema` / `handler` / `is_async`, fixing “missing 1 required positional argument: 'handler'”.
 - **OpenRouter HTTP 402 on low balance:** `_run_session_via_aiagent` passes explicit `max_tokens` from `config.yaml` `model.max_tokens`, overridden by `OPENROUTER_MAX_TOKENS`, defaulting to `4096`, so providers do not reserve completion budget against an enormous implicit cap.
 - **P&L plugin hooks vs Hermes `invoke_hook`:** Darwin lifecycle hooks are synchronous again — Hermes calls hook callbacks without awaiting coroutines (`invoke_hook` uses plain ``cb(**kwargs)``). Telemetry from hooks uses `BackendClient.post_sync`, `flush_queued_telemetry_sync`, and `close_backend_client_sync`, eliminating “coroutine was never awaited” warnings for `_on_session_start`, `_pre_tool_call`, `_post_tool_call`, and `_on_session_end`.
+- **Canvas THOUGHT telemetry (`post_llm_call`):** `_pre_llm_call` / `_post_llm_call` now accept **keyword-only** Hermes payloads (`assistant_response`, `model`, …). The old positional `(response, usage, model)` signatures caused a silent `TypeError` inside `invoke_hook`, so cognitive events never reached `/telemetry/stream-event` and the Infinite Canvas stayed empty despite a successful Modal run.
+- **Darwin tool handlers vs `registry.dispatch`:** all `darwin_tools` async handlers now accept ``**kwargs`` so Hermes can pass `task_id`, `user_task`, `session_id`, etc. (`entry.handler(args, **kwargs)`). Without this, tools such as `check_ledger` failed with “unexpected keyword argument 'task_id'”.
+- **God Layer HTTP hardening:** longer default timeouts (read **60s**) and retries on transient ``httpx`` timeouts for ledger/API calls; ``normalize_backend_base_url`` prepends ``https://`` when spawn omits the scheme; **401/403** responses log the response body before ``SystemExit`` so Fly ``AGENT_JWT_SECRET`` drift is diagnosable in Modal logs.
+- **Modal observability:** `run_agent` configures stderr logging at INFO and logs spawn metadata plus a `run_conversation` summary; set `DARWIN_HERMES_VERBOSE=1` in the Modal secret for full Hermes progress (`quiet_mode` off).
 
 ### Changed
 
