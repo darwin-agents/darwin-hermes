@@ -10,6 +10,10 @@ Why this replaces the old HeartbeatThread + TelemetryClient:
   - The God Layer detects crashes by absence of post_llm_call events for >120s.
   - Kill signals work via JWT revocation — next backend call fails.
   - No background thread needed; no Redis poll needed.
+
+Hermes calls ``invoke_hook()`` synchronously (callbacks are not awaited).  Hook
+handlers must be plain ``def`` and use ``BackendClient.post_sync`` / flush helpers,
+not ``async def``.
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ def register_pnl_hooks(ctx) -> None:
     ctx.register_hook("on_session_end",   _on_session_end)
 
 
-async def _on_session_start(**kwargs):
+def _on_session_start(**kwargs):
     global _session_start, _token_running_total, _cost_running_total
     _session_start = time.time()
     _token_running_total = 0
@@ -47,11 +51,11 @@ async def _on_session_start(**kwargs):
     from .backend_client import get_backend_client
     client = get_backend_client()
     try:
-        await client.flush_queued_telemetry()
+        client.flush_queued_telemetry_sync()
     except Exception:
         pass
     wake_prompt = os.environ.get("DARWIN_WAKE_PROMPT", "")
-    await client.post_async("/telemetry/stream-event", {
+    client.post_sync("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
         "event_type": "AGENT_WOKE",
@@ -63,12 +67,12 @@ async def _on_session_start(**kwargs):
     })
 
 
-async def _pre_llm_call(messages, model, **kwargs):
+def _pre_llm_call(messages, model, **kwargs):
     """Stamp the start so post_llm_call can measure latency."""
     pass  # Langfuse handles real tracing; we just need the post hook
 
 
-async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **kwargs):
+def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **kwargs):
     """Record token burn to both the LLM cost tracker and the metrics stream."""
     global _token_running_total, _cost_running_total
 
@@ -97,7 +101,7 @@ async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **
 
     # 1. THOUGHT canvas event — surfaces every cognitive turn on the Infinite Canvas
     content = _extract_response_text(response)
-    await client.post_async("/telemetry/stream-event", {
+    client.post_sync("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
         "event_type": "THOUGHT",
@@ -114,7 +118,7 @@ async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **
     })
 
     # 2. Per-LLM-call record — powers Token ROI dashboard + Mental Replay cost overlay
-    await client.post_async("/telemetry/llm-call", {
+    client.post_sync("/telemetry/llm-call", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
         "model": model,
@@ -136,7 +140,7 @@ async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **
     })
 
     # 3. Rolling metrics batch — powers the burn-rate time series chart
-    await client.post_async("/telemetry/stream", {
+    client.post_sync("/telemetry/stream", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
         "metrics": {
@@ -150,7 +154,7 @@ async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **
     })
 
 
-async def _pre_tool_call(tool_name, args, **kwargs):
+def _pre_tool_call(tool_name, args, **kwargs):
     from .backend_client import get_backend_client
     client = get_backend_client()
 
@@ -159,7 +163,7 @@ async def _pre_tool_call(tool_name, args, **kwargs):
         tasks = args.get("tasks") or []
         for task in tasks:
             neuron_id = task.get("role") or task.get("neuron_id") or task.get("name", "neuron")
-            await client.post_async("/telemetry/stream-event", {
+            client.post_sync("/telemetry/stream-event", {
                 "darwin_id": client.darwin_id,
                 "session_id": client.session_id,
                 "event_type": "NEURON_SPAWNED",
@@ -177,7 +181,7 @@ async def _pre_tool_call(tool_name, args, **kwargs):
                 "timestamp_ms": int(time.time() * 1000),
             })
 
-    await client.post_async("/telemetry/stream-event", {
+    client.post_sync("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
         "event_type": "TOOL_CALL",
@@ -189,10 +193,10 @@ async def _pre_tool_call(tool_name, args, **kwargs):
     })
 
 
-async def _post_tool_call(tool_name, result, duration_ms, **kwargs):
+def _post_tool_call(tool_name, result, duration_ms, **kwargs):
     from .backend_client import get_backend_client
     client = get_backend_client()
-    await client.post_async("/telemetry/stream-event", {
+    client.post_sync("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
         "event_type": "TOOL_RESULT",
@@ -205,13 +209,13 @@ async def _post_tool_call(tool_name, result, duration_ms, **kwargs):
     })
 
 
-async def _subagent_stop(parent_session_id, child_role, child_status,
-                         duration_ms, **kwargs):
+def _subagent_stop(parent_session_id, child_role, child_status,
+                   duration_ms, **kwargs):
     """Translate Hermes subagent_stop into a Darwin canvas event."""
     from .backend_client import get_backend_client
     client = get_backend_client()
     event_type = "NEURON_COMPLETED" if child_status == "completed" else "NEURON_FAILED"
-    await client.post_async("/telemetry/stream-event", {
+    client.post_sync("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
         "event_type": event_type,
@@ -223,16 +227,16 @@ async def _subagent_stop(parent_session_id, child_role, child_status,
     })
 
 
-async def _on_session_end(**kwargs):
+def _on_session_end(**kwargs):
     """Final flush before container exit."""
-    from .backend_client import get_backend_client, close_backend_client
+    from .backend_client import get_backend_client, close_backend_client_sync
     client = get_backend_client()
     try:
-        await client.flush_queued_telemetry()
+        client.flush_queued_telemetry_sync()
     except Exception:
         pass
-    # Use post_async — a telemetry failure must not prevent volume.commit()
-    await client.post_async("/telemetry/stream-event", {
+    # Fire-and-forget semantics — a telemetry failure must not prevent volume.commit()
+    client.post_sync("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
         "session_id": client.session_id,
         "event_type": "SESSION_ENDED",
@@ -243,8 +247,7 @@ async def _on_session_end(**kwargs):
         },
         "timestamp_ms": int(time.time() * 1000),
     })
-    # Release the persistent HTTP connection pool
-    await close_backend_client()
+    close_backend_client_sync()
 
 
 # ---------------------------------------------------------------------------
