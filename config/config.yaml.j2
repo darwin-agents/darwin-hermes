@@ -4,7 +4,10 @@
 # --- Primary model (OpenRouter slugs — e.g. anthropic/claude-* … ) ---
 model:
   provider: openrouter
-  default: anthropic/claude-opus-4-7
+  # Haiku keeps spend predictable on low balances; override with OPENROUTER_MODEL / OPENROUTER_DEFAULT_MODEL for Opus/Sonnet.
+  default: anthropic/claude-haiku-4.5
+  # Per-completion output cap. OpenRouter reserves against max_tokens — very large values can trigger HTTP 402 on limited credits.
+  max_tokens: 4096
 
 # --- Terminal backend: Modal sandboxes for every shell/file command ---
 terminal:
