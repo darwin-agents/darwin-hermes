@@ -28,7 +28,7 @@ The cognitive engine of the Darwin Agents platform. Runs inside ephemeral [Modal
 
 ```
 darwin-agent/
-├── hermes-core/                    # git submodule — NousResearch/hermes-agent (NEVER modified)
+├── hermes-core/                    # git submodule — NousResearch/hermes-agent (default pin; fork to vendor patches)
 │
 ├── darwin_tools/                   # our Hermes plugin — single integration point
 │   ├── plugin.yaml                 # Hermes plugin manifest
@@ -97,6 +97,8 @@ cp .env.example .env
 ```
 
 Hermes-only unit tests from this repo use the submodule’s env: `cd hermes-core && uv run pytest tests/agent/…`.
+
+To carry Hermes changes (for example wiring OpenRouter completion ``usage`` into ``post_llm_call``), commit inside `hermes-core`, push to **your fork**, point the submodule remote at that fork, then bump the recorded commit—keep the default pin on NousResearch so teammates and CI can `git submodule update` without extra remotes.
 
 ---
 

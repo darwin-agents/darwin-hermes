@@ -11,10 +11,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **OpenRouter-billed P&L:** each user turn accumulates completion ``usage`` from the agent loop (including OpenRouter’s ``usage.cost``). ``post_llm_call`` now passes a per-turn ``usage`` dict (token buckets + optional ``billed_cost_usd``) and wall-clock ``duration_ms``. Darwin ``pnl_hooks`` prefers ``billed_cost_usd`` / raw ``cost`` before falling back to LiteLLM. Langfuse’s ``post_llm_call`` usage path reads the same keys and uses ``billed_cost_usd`` for ``cost_details.total`` when present.
+- **OpenRouter-aware P&L (Darwin):** ``pnl_hooks._post_llm_call`` resolves dollar burn via ``billed_cost_usd`` / raw ``cost`` on the ``usage`` dict when those keys are present, otherwise falls back to the LiteLLM-style estimator. The ``hermes-core`` submodule stays pinned to upstream ``601e5f1`` for reproducible installs; if you need Hermes to forward OpenRouter completion ``usage`` into ``post_llm_call``, carry a forked submodule commit and bump the pin (see README).
 
 ### Fixed
 
+- **Hermes (submodule) OpenAI-compatible path:** nested ``message.content`` blobs (dict/list from OpenRouter) are flattened to a string before logging and slicing. Previously ``content`` could stay a dict, so ``content[:500]`` raised ``KeyError: slice(None, 500, None)`` and printed as “Error during OpenAI-compatible API call #N: slice(None, 500, None)”.
 - **`check_ledger`:** tolerate a God Layer JSON body missing `initial_budget` / `transactions` (defensive parsing). The canonical fix is **`LedgerResponse`** on the backend including `initial_budget` so the field is no longer stripped at serialization.
 - **`modal_app.py` Hermes fallback:** import `asyncio` at module scope so `asyncio.to_thread(...)` works when `hermes_agent.python_library.run_session` is missing.
 - **Hermes plugin entry point:** `[project.entry-points."hermes_agent.plugins"]` now uses `darwin = "darwin_tools"` so `ep.load()` returns the package module (Hermes requires `register` on the loaded object; `darwin_tools:register` loaded only the callable and triggered “Plugin 'darwin' has no register() function”).
