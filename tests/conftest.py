@@ -87,7 +87,14 @@ class FakeCtx:
         self.tools: dict[str, tuple] = {}
         self.hooks: dict[str, list] = {}
 
-    def register_tool(self, name: str, schema: dict, handler) -> None:
+    def register_tool(
+        self,
+        name: str,
+        toolset: str | None = None,
+        schema: dict | None = None,
+        handler=None,
+        **kwargs,
+    ) -> None:
         self.tools[name] = (schema, handler)
 
     def register_hook(self, event: str, handler) -> None:

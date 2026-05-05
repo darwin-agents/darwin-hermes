@@ -179,6 +179,37 @@ def test_post_llm_call_emits_thought_event(backend_mock):
     assert "I will spawn two researcher neurons." in payload["content"]
 
 
+def test_post_llm_call_matches_hermes_invoke_kwargs(backend_mock):
+    """Hermes calls ``post_llm_call`` with assistant_response (+ session kw), never positional usage."""
+    captured: list[dict] = []
+
+    def capture(request, route=None):
+        captured.append(json.loads(request.content))
+        return __import__("httpx").Response(200, json={"event_id": "ev-hermes"})
+
+    backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
+    backend_mock.post("/api/v1/telemetry/llm-call").mock(
+        return_value=__import__("httpx").Response(201, json={"recorded": True})
+    )
+    backend_mock.post("/api/v1/telemetry/stream").mock(
+        return_value=__import__("httpx").Response(202, json={"queued": True})
+    )
+
+    _post_llm_call(
+        session_id="sess-h",
+        user_message="directive",
+        assistant_response="Here is my survival plan step one.",
+        conversation_history=[],
+        model="anthropic/claude-haiku-4.5",
+        platform="",
+    )
+
+    thought = [e for e in captured if e.get("event_type") == "THOUGHT"]
+    assert len(thought) == 1
+    assert thought[0]["payload"]["model"] == "anthropic/claude-haiku-4.5"
+    assert "survival plan" in thought[0]["payload"]["content"]
+
+
 def test_post_llm_call_thought_model_always_set(backend_mock):
     """model must be present in every THOUGHT event regardless of token counts."""
     captured: list[dict] = []

@@ -25,6 +25,13 @@ def tools(ctx):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_check_ledger_accepts_registry_dispatch_kwargs(tools, backend_mock):
+    """Hermes calls ``handler(args, task_id=..., user_task=...)``."""
+    result = await tools["check_ledger"]({}, task_id="task-1", user_task=None)
+    assert result["balance"] == 80.00
+
+
+@pytest.mark.asyncio
 async def test_check_ledger_returns_correct_shape(tools, backend_mock):
     result = await tools["check_ledger"]({})
     assert result["balance"] == 80.00
