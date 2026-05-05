@@ -2,7 +2,7 @@
 darwin-agent — Modal entrypoint
 
 Boot sequence:
-  1. Mount Modal Volume at /data — $HERMES_HOME = /data/hermes_home
+  1. Mount shared Modal Volume at /mnt/darwin_state — $HERMES_HOME = /mnt/darwin_state/<darwin_id>
   2. Copy SOUL.md to $HERMES_HOME if not present (preserves agent-edited overrides)
   3. Render config.yaml from the Jinja2 template (picks up per-session model, backends)
   4. Set per-session env vars so darwin_tools can find the backend + JWT
@@ -19,13 +19,23 @@ On DarwinHibernateSignal:
   2. Register wake trigger (CRON or WEBHOOK) with the God Layer
   3. Push AGENT_HIBERNATED canvas event
   4. volume.commit() in the outer finally block persists $HERMES_HOME durably
+
+Modal requires the Volume handle used with ``commit()`` to be attached on the function via
+``@app.function(volumes={...})``. Per-invocation ``Volume.from_name`` without a mount cannot be
+committed; we therefore use one named volume and isolate each Darwin under a subdirectory.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
-import modal
 from pathlib import Path
+
+import modal
+
+# Single Modal Volume for all Darwins (one subdirectory per darwin_id). Created on first deploy/run.
+DARWIN_STATE_VOLUME = modal.Volume.from_name("darwin-agents-state", create_if_missing=True)
+STATE_MOUNT = "/mnt/darwin_state"
 
 
 # ---------------------------------------------------------------------------
@@ -49,16 +59,10 @@ image = (
     )
     .env({
         "PYTHONUNBUFFERED": "1",
-        "HERMES_HOME": "/data/hermes_home",
     })
 )
 
 app = modal.App("darwin-agent", image=image)
-
-
-def get_volume(darwin_id: str) -> modal.Volume:
-    """One persistent Modal Volume per Darwin — mounts at /data on every boot."""
-    return modal.Volume.from_name(f"darwin-{darwin_id}", create_if_missing=True)
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +73,7 @@ def get_volume(darwin_id: str) -> modal.Volume:
     timeout=900,
     memory=2048,
     cpu=2.0,
+    volumes={STATE_MOUNT: DARWIN_STATE_VOLUME},
     secrets=[modal.Secret.from_name("darwin-agent-secrets")],
 )
 def run_agent(
@@ -90,7 +95,6 @@ def run_agent(
         if not val:
             raise ValueError(f"run_agent: required argument '{name}' is empty")
 
-    import asyncio
     asyncio.run(_run_agent_async(darwin_id, session_id, wake_prompt, agent_jwt, backend_url, vcc_ref))
 
 
@@ -102,49 +106,115 @@ async def _run_agent_async(
     backend_url: str,
     vcc_ref: str = "",
 ) -> None:
-    volume = get_volume(darwin_id)
-    # volume.mount() is used instead of @app.function(volumes=...) because
-    # the volume name is dynamic (one per Darwin).  This is the documented
-    # Modal pattern for runtime-resolved volumes.
-    with volume.mount("/data"):
-        hermes_home = Path("/data/hermes_home")
-        hermes_home.mkdir(parents=True, exist_ok=True)
+    hermes_home = Path(STATE_MOUNT) / darwin_id
+    hermes_home.mkdir(parents=True, exist_ok=True)
 
-        # 1. Copy SOUL.md only if not already present
-        #    (preserve any identity edits the agent made in a previous session)
-        soul_path = hermes_home / "SOUL.md"
-        if not soul_path.exists():
-            soul_path.write_text(Path("/root/SOUL.md").read_text())
+    # 1. Copy SOUL.md only if not already present
+    #    (preserve any identity edits the agent made in a previous session)
+    soul_path = hermes_home / "SOUL.md"
+    if not soul_path.exists():
+        soul_path.write_text(Path("/root/SOUL.md").read_text())
 
-        # 2. Render config.yaml from the Jinja2 template
-        await _render_config(hermes_home, darwin_id, session_id, agent_jwt, backend_url)
+    # 2. Render config.yaml from the Jinja2 template
+    await _render_config(hermes_home, darwin_id, session_id, agent_jwt, backend_url)
 
-        # 3. Per-session env vars — read by darwin_tools at register time
-        os.environ["HERMES_HOME"]        = str(hermes_home)
-        os.environ["DARWIN_ID"]          = darwin_id
-        os.environ["DARWIN_SESSION_ID"]  = session_id
-        os.environ["DARWIN_AGENT_JWT"]   = agent_jwt
-        os.environ["DARWIN_BACKEND_URL"] = backend_url
-        os.environ["DARWIN_WAKE_PROMPT"] = wake_prompt
-        # VCC_REF is per-Darwin — passed as a spawn-time arg, NOT a static Modal Secret
-        os.environ["DARWIN_VCC_REF"] = vcc_ref
+    # 3. Per-session env vars — read by darwin_tools at register time
+    os.environ["HERMES_HOME"]        = str(hermes_home)
+    os.environ["DARWIN_ID"]          = darwin_id
+    os.environ["DARWIN_SESSION_ID"]  = session_id
+    os.environ["DARWIN_AGENT_JWT"]   = agent_jwt
+    os.environ["DARWIN_BACKEND_URL"] = backend_url
+    os.environ["DARWIN_WAKE_PROMPT"] = wake_prompt
+    # VCC_REF is per-Darwin — passed as a spawn-time arg, NOT a static Modal Secret
+    os.environ["DARWIN_VCC_REF"] = vcc_ref
 
-        # 4. Hand off to Hermes
-        from hermes_agent.python_library import run_session
-        from darwin_tools.lifecycle import DarwinHibernateSignal
+    # 4. Hand off to Hermes
+    from darwin_tools.lifecycle import DarwinHibernateSignal
 
+    try:
         try:
+            # Legacy Hermes API (older submodule revisions).
+            from hermes_agent.python_library import run_session  # type: ignore[import-not-found]
+
             await run_session(
                 home=str(hermes_home),
                 user_message=wake_prompt,
             )
-        except DarwinHibernateSignal as sig:
-            await _execute_hibernation(
-                sig, hermes_home, darwin_id, session_id, agent_jwt, backend_url
-            )
-        finally:
-            # Persists state.db, MEMORY.md, USER.md, skills/, sessions/ durably
-            volume.commit()
+        except ModuleNotFoundError:
+            # Newer Hermes revisions expose AIAgent in run_agent.py.
+            await asyncio.to_thread(_run_session_via_aiagent, wake_prompt)
+    except DarwinHibernateSignal as sig:
+        await _execute_hibernation(
+            sig, hermes_home, darwin_id, session_id, agent_jwt, backend_url
+        )
+    finally:
+        await DARWIN_STATE_VOLUME.commit.aio()
+
+
+def _run_session_via_aiagent(user_message: str) -> None:
+    """
+    Hermes compatibility path for new submodule versions where
+    ``hermes_agent.python_library.run_session`` no longer exists.
+
+    Library-mode ``AIAgent()`` defaults ``model`` to empty; Hermes' init path
+    discards the routed default model when constructing the HTTP client, which
+    yields OpenRouter ``400 No models provided``. We therefore pass explicit
+    ``provider``, ``model``, and ``max_tokens`` from rendered ``config.yaml`` (with optional
+    ``OPENROUTER_*`` env overrides). A bounded ``max_tokens`` avoids OpenRouter HTTP 402 when
+    the provider reserves spend against a huge completion budget.
+    """
+    from run_agent import AIAgent  # type: ignore[import-not-found]
+
+    hermes_home = Path(os.environ.get("HERMES_HOME", ""))
+    provider = "openrouter"
+    model_id = (
+        (os.environ.get("OPENROUTER_MODEL") or "").strip()
+        or (os.environ.get("OPENROUTER_DEFAULT_MODEL") or "").strip()
+        or "anthropic/claude-haiku-4.5"
+    )
+    max_iterations = 90
+    max_tokens = None
+
+    cfg_path = hermes_home / "config.yaml"
+    if cfg_path.is_file():
+        try:
+            import yaml
+
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                m = data.get("model")
+                if isinstance(m, dict):
+                    prov = (m.get("provider") or "").strip()
+                    if prov:
+                        provider = prov.lower()
+                    md = (m.get("default") or "").strip()
+                    if md:
+                        model_id = md
+                    mtoks = m.get("max_tokens")
+                    if mtoks is not None:
+                        max_tokens = int(mtoks)
+                agent_cfg = data.get("agent")
+                if isinstance(agent_cfg, dict):
+                    mt = agent_cfg.get("max_turns")
+                    if mt is not None:
+                        max_iterations = int(mt)
+        except Exception:
+            pass
+
+    env_mt = (os.environ.get("OPENROUTER_MAX_TOKENS") or "").strip()
+    if env_mt:
+        max_tokens = int(env_mt)
+    if max_tokens is None:
+        max_tokens = 4096
+
+    agent = AIAgent(
+        provider=provider,
+        model=model_id,
+        max_iterations=max_iterations,
+        max_tokens=max_tokens,
+        quiet_mode=True,
+    )
+    agent.run_conversation(user_message)
 
 
 async def _render_config(
