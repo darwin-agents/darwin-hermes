@@ -11,12 +11,14 @@ Call close() from the on_session_end hook to release the connection.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import threading
 
 import httpx
 
-from darwin_tools.telemetry_queue import enqueue, flush_pending
+from darwin_tools.telemetry_queue import enqueue, flush_pending, flush_pending_sync
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +49,54 @@ async def close_backend_client() -> None:
         _client = None
 
 
+_CLOSE_TIMEOUT_SEC = 30.0
+
+
+def close_backend_client_sync() -> None:
+    """Close the singleton client from synchronous code (Hermes plugin hooks).
+
+    Hooks run outside ``asyncio`` — they cannot ``await`` async closers. When the
+    process already has a running loop, completion runs in a helper thread.
+    """
+    global _client
+    if _client is None:
+        return
+    c = _client
+    _client = None
+
+    async def _run() -> None:
+        await c.close()
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_run())
+        return
+
+    outcome: dict[str, BaseException] = {}
+    done = threading.Event()
+
+    def _thread_runner() -> None:
+        try:
+            asyncio.run(_run())
+        except BaseException as exc:
+            outcome["exc"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(
+        target=_thread_runner,
+        name="darwin-backend-close",
+        daemon=True,
+    ).start()
+    if not done.wait(timeout=_CLOSE_TIMEOUT_SEC):
+        log.warning(
+            "close_backend_client_sync timed out after %.0fs", _CLOSE_TIMEOUT_SEC
+        )
+    elif "exc" in outcome:
+        log.warning("close_backend_client_sync failed: %s", outcome["exc"])
+
+
 class BackendClient:
     def __init__(
         self,
@@ -67,9 +117,50 @@ class BackendClient:
             timeout=_TIMEOUT,
             headers=self._headers,
         )
+        # Hermes invokes plugin hooks synchronously — telemetry uses this instead of AsyncClient.
+        self._http_sync: httpx.Client | None = None
+
+    def _sync_client(self) -> httpx.Client:
+        if self._http_sync is None:
+            self._http_sync = httpx.Client(timeout=_TIMEOUT, headers=self._headers)
+        return self._http_sync
+
+    def post_sync(self, path: str, body: dict) -> None:
+        """Fire-and-forget telemetry from sync hooks (same semantics as ``post_async``)."""
+        try:
+            resp = self._sync_client().post(
+                self.base + path,
+                json=body,
+                timeout=_TIMEOUT_FIRE_AND_FORGET,
+            )
+            self._check_revocation(resp)
+            resp.raise_for_status()
+        except SystemExit:
+            raise
+        except Exception:
+            enqueue(path, body)
+
+    def post_sync_deliver(self, path: str, body: dict) -> None:
+        """Strict sync POST for queue replay — raises on failure."""
+        resp = self._sync_client().post(
+            self.base + path,
+            json=body,
+            timeout=_TIMEOUT,
+        )
+        self._check_revocation(resp)
+        resp.raise_for_status()
+
+    def flush_queued_telemetry_sync(self) -> int:
+        return flush_pending_sync(self)
 
     async def close(self) -> None:
         """Release the underlying connection pool."""
+        if self._http_sync is not None:
+            try:
+                self._http_sync.close()
+            except Exception:
+                pass
+            self._http_sync = None
         await self._http.aclose()
 
     async def get(self, path: str, params: dict | None = None) -> dict:

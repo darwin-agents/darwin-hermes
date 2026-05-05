@@ -112,3 +112,19 @@ async def flush_pending(client: BackendClient) -> int:
         except Exception:
             bump_attempts(row_id)
     return sent
+
+
+def flush_pending_sync(client: BackendClient) -> int:
+    """Same as ``flush_pending`` but uses sync HTTP (Hermes hooks are synchronous)."""
+    sent = 0
+    for row_id, path, body_s in fetch_pending():
+        try:
+            body = json.loads(body_s)
+            client.post_sync_deliver(path, body)
+            delete_row(row_id)
+            sent += 1
+        except SystemExit:
+            raise
+        except Exception:
+            bump_attempts(row_id)
+    return sent
