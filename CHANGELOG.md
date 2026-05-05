@@ -9,6 +9,19 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`modal_app.py` Hermes fallback:** import `asyncio` at module scope so `asyncio.to_thread(...)` works when `hermes_agent.python_library.run_session` is missing.
+- **Hermes plugin entry point:** `[project.entry-points."hermes_agent.plugins"]` now uses `darwin = "darwin_tools"` so `ep.load()` returns the package module (Hermes requires `register` on the loaded object; `darwin_tools:register` loaded only the callable and triggered “Plugin 'darwin' has no register() function”).
+- **OpenRouter ``No models provided``:** `_run_session_via_aiagent` passes explicit `provider` and `model` from `$HERMES_HOME/config.yaml` (with optional `OPENROUTER_MODEL` / `OPENROUTER_DEFAULT_MODEL` env overrides), because bare `AIAgent()` leaves `model` empty and Hermes drops the routed default during client init.
+- **Darwin plugin tool registration:** all `PluginContext.register_tool(...)` calls now pass Hermes’ positional `toolset` plus keyword `name` / `schema` / `handler` / `is_async`, fixing “missing 1 required positional argument: 'handler'”.
+- **OpenRouter HTTP 402 on low balance:** `_run_session_via_aiagent` passes explicit `max_tokens` from `config.yaml` `model.max_tokens`, overridden by `OPENROUTER_MAX_TOKENS`, defaulting to `4096`, so providers do not reserve completion budget against an enormous implicit cap.
+
+### Changed
+
+- **Modal Volume attachment:** use one named volume `darwin-agents-state` mounted at `/mnt/darwin_state`, with each Darwin under `/mnt/darwin_state/<darwin_id>/`. Modal only allows `commit()` on volumes declared on `@app.function(volumes={...})`; per-invocation `Volume.from_name` without a mount cannot be committed. Older per-Darwin volumes (`darwin-<uuid>`) are no longer used — migrate data manually if needed.
+- **`config/config.yaml.j2`:** primary model default is `anthropic/claude-haiku-4.5` with `model.max_tokens: 4096` for predictable OpenRouter spend (override via env or template vars as needed).
+
 ---
 
 ## [0.3.0] — 2026-05-05
@@ -21,10 +34,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Modal runtime async + Hermes compatibility:** `modal_app.py` now uses async Volume interfaces (`listdir.aio`, `read_file.aio`, `remove_file.aio`, `batch_upload.aio`) to avoid async warnings on Modal v1.x, and falls back to `run_agent.AIAgent` when `hermes_agent.python_library.run_session` is unavailable in newer Hermes submodule revisions.
+- **Modal async persistence:** session snapshot commit now uses `await volume.commit.aio()` to avoid blocking Modal API calls inside async runtime.
 - **`config/config.yaml.j2`** — primary `model.provider: openrouter`; default model slug remains configurable (Hermes resolves via `OPENROUTER_API_KEY`).
 - **`prompts/SOUL.md`** — model routing table now documents **OpenRouter slugs** and marketing/multimodal guidance.
 - **Modal SDK compatibility:** `modal_app.py` now uses `Image.add_local_dir()` / `Image.add_local_file()` (replacing removed `copy_local_dir` / `copy_local_file`) for Modal client v1.x deploys.
 - **Modal build fix:** local sources added to the image now use `copy=True` so subsequent build steps (`uv pip install -e /root/hermes-core[all]`, `uv pip install -e /root`) are valid under Modal v1.x image build rules.
+- **Modal runtime compatibility:** replaced removed `Volume.mount()` flow with explicit restore/snapshot helpers using `Volume.listdir()` + `read_file()` + `batch_upload().put_directory(...)`, so per-Darwin state persists correctly on Modal v1.x.
 - **`darwin_tools/backend_client.post_async`** — treats non-2xx HTTP as failure and **enqueues** for retry instead of silently dropping payloads.
 - **Delegate neuron default model** — `OPENROUTER_DEFAULT_TASK_MODEL` (default `anthropic/claude-haiku-4.5`).
 
