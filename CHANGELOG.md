@@ -16,11 +16,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **OpenRouter ``No models provided``:** `_run_session_via_aiagent` passes explicit `provider` and `model` from `$HERMES_HOME/config.yaml` (with optional `OPENROUTER_MODEL` / `OPENROUTER_DEFAULT_MODEL` env overrides), because bare `AIAgent()` leaves `model` empty and Hermes drops the routed default during client init.
 - **Darwin plugin tool registration:** all `PluginContext.register_tool(...)` calls now pass Hermes’ positional `toolset` plus keyword `name` / `schema` / `handler` / `is_async`, fixing “missing 1 required positional argument: 'handler'”.
 - **OpenRouter HTTP 402 on low balance:** `_run_session_via_aiagent` passes explicit `max_tokens` from `config.yaml` `model.max_tokens`, overridden by `OPENROUTER_MAX_TOKENS`, defaulting to `4096`, so providers do not reserve completion budget against an enormous implicit cap.
+- **P&L plugin hooks vs Hermes `invoke_hook`:** Darwin lifecycle hooks are synchronous again — Hermes calls hook callbacks without awaiting coroutines (`invoke_hook` uses plain ``cb(**kwargs)``). Telemetry from hooks uses `BackendClient.post_sync`, `flush_queued_telemetry_sync`, and `close_backend_client_sync`, eliminating “coroutine was never awaited” warnings for `_on_session_start`, `_pre_tool_call`, `_post_tool_call`, and `_on_session_end`.
 
 ### Changed
 
 - **Modal Volume attachment:** use one named volume `darwin-agents-state` mounted at `/mnt/darwin_state`, with each Darwin under `/mnt/darwin_state/<darwin_id>/`. Modal only allows `commit()` on volumes declared on `@app.function(volumes={...})`; per-invocation `Volume.from_name` without a mount cannot be committed. Older per-Darwin volumes (`darwin-<uuid>`) are no longer used — migrate data manually if needed.
 - **`config/config.yaml.j2`:** primary model default is `anthropic/claude-haiku-4.5` with `model.max_tokens: 4096` for predictable OpenRouter spend (override via env or template vars as needed).
+- **`darwin_tools/backend_client.py`:** optional lazily-created `httpx.Client` for sync hook telemetry; `async`-based tools unchanged (`post_async`, etc.).
 
 ---
 
