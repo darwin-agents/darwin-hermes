@@ -9,6 +9,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **OpenRouter-billed P&L:** each user turn accumulates completion ``usage`` from the agent loop (including OpenRouter’s ``usage.cost``). ``post_llm_call`` now passes a per-turn ``usage`` dict (token buckets + optional ``billed_cost_usd``) and wall-clock ``duration_ms``. Darwin ``pnl_hooks`` prefers ``billed_cost_usd`` / raw ``cost`` before falling back to LiteLLM. Langfuse’s ``post_llm_call`` usage path reads the same keys and uses ``billed_cost_usd`` for ``cost_details.total`` when present.
+
 ### Fixed
 
 - **`check_ledger`:** tolerate a God Layer JSON body missing `initial_budget` / `transactions` (defensive parsing). The canonical fix is **`LedgerResponse`** on the backend including `initial_budget` so the field is no longer stripped at serialization.

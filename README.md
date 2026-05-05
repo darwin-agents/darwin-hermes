@@ -93,7 +93,10 @@ uv sync --extra dev                       # lockfile + optional dev deps (pytest
 uv pip install -e hermes-core[all]        # Hermes from submodule
 uv pip install -e .                       # darwin_tools entry point (see pyproject.toml)
 cp .env.example .env
+# Tests (same interpreter/lockfile as setup): `uv run pytest tests/` or `make test`
 ```
+
+Hermes-only unit tests from this repo use the submodule’s env: `cd hermes-core && uv run pytest tests/agent/…`.
 
 ---
 

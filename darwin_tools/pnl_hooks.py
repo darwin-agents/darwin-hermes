@@ -72,13 +72,32 @@ def _pre_llm_call(**kwargs):
     pass
 
 
+def _resolve_post_llm_cost_usd(model: str, usage: dict) -> float:
+    """Prefer OpenRouter/Hermes ``billed_cost_usd``, then raw ``cost``, else LiteLLM."""
+    if "billed_cost_usd" in usage:
+        try:
+            return max(0.0, float(usage["billed_cost_usd"]))
+        except (TypeError, ValueError):
+            pass
+    if "cost" in usage and usage["cost"] is not None:
+        try:
+            return max(0.0, float(usage["cost"]))
+        except (TypeError, ValueError):
+            pass
+    in_tok = int(usage.get("input_tokens", 0) or 0)
+    out_tok = int(usage.get("output_tokens", 0) or 0)
+    cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+    return _estimate_cost(model, in_tok, out_tok, cache_read_tokens=cache_read)
+
+
 def _post_llm_call(**kwargs):
     """
     Record token burn + canvas THOUGHT events.
 
     Hermes ``post_llm_call`` passes ``assistant_response``, ``conversation_history``,
-    ``model``, etc. — never positional ``(response, usage)``.  Older tests may still
-    pass ``response=`` / ``usage=``; both shapes are accepted.
+    ``model``, and (since OpenRouter billing integration) a per-turn ``usage`` dict
+    with token buckets plus optional ``billed_cost_usd`` from provider ``usage.cost``.
+    Older tests may still pass ``response=`` / ``usage=``; both shapes are accepted.
     """
     global _token_running_total, _cost_running_total
 
@@ -99,9 +118,7 @@ def _post_llm_call(**kwargs):
     cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
     reasoning = int(usage.get("reasoning_tokens", 0) or 0)
 
-    # Hermes does not attach a usage dict to this hook — keep zeros unless tests
-    # or another integration passes explicit ``usage=``.
-    cost = _estimate_cost(model, in_tok, out_tok, cache_read_tokens=cache_read)
+    cost = _resolve_post_llm_cost_usd(model, usage)
     provider = _model_to_provider(model)
     request_id = str(usage.get("request_id") or uuid.uuid4())
     in_mod = usage.get("input_modalities") or []

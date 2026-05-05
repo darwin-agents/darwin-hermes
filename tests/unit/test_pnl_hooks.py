@@ -19,6 +19,7 @@ from darwin_tools.pnl_hooks import (
     _post_llm_call,
     _pre_tool_call,
     _redact_str,
+    _resolve_post_llm_cost_usd,
     register_pnl_hooks,
 )
 
@@ -210,6 +211,18 @@ def test_post_llm_call_matches_hermes_invoke_kwargs(backend_mock):
     assert "survival plan" in thought[0]["payload"]["content"]
 
 
+def test_resolve_post_llm_cost_prefers_billed_cost_usd():
+    """OpenRouter (via Hermes) passes aggregated provider USD — skip LiteLLM."""
+    u = {
+        "input_tokens": 9000,
+        "output_tokens": 2000,
+        "cache_read_input_tokens": 0,
+        "reasoning_tokens": 0,
+        "billed_cost_usd": 0.0175,
+    }
+    assert _resolve_post_llm_cost_usd("anthropic/unknown-future-model", u) == 0.0175
+
+
 def test_post_llm_call_thought_model_always_set(backend_mock):
     """model must be present in every THOUGHT event regardless of token counts."""
     captured: list[dict] = []
@@ -235,6 +248,38 @@ def test_post_llm_call_thought_model_always_set(backend_mock):
 
     thought_events = [e for e in captured if e.get("event_type") == "THOUGHT"]
     assert thought_events[0]["payload"]["model"] == "claude-haiku-4-5"
+
+
+def test_post_llm_call_llm_telemetry_uses_billed_cost_usd(backend_mock):
+    llm_bodies: list[dict] = []
+
+    def capture_llm(request, route=None):
+        llm_bodies.append(json.loads(request.content))
+        return __import__("httpx").Response(201, json={"recorded": True})
+
+    backend_mock.post("/api/v1/telemetry/stream-event").mock(
+        return_value=__import__("httpx").Response(200, json={"event_id": "ev-b"})
+    )
+    backend_mock.post("/api/v1/telemetry/llm-call").mock(side_effect=capture_llm)
+    backend_mock.post("/api/v1/telemetry/stream").mock(
+        return_value=__import__("httpx").Response(202, json={"queued": True})
+    )
+
+    _post_llm_call(
+        assistant_response="Done.",
+        model="anthropic/claude-haiku-4.5",
+        usage={
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 0,
+            "reasoning_tokens": 0,
+            "billed_cost_usd": 0.00042,
+        },
+    )
+    assert len(llm_bodies) == 1
+    assert llm_bodies[0]["cost_usd"] == 0.00042
+    assert llm_bodies[0]["input_tokens"] == 100
+    assert llm_bodies[0]["output_tokens"] == 50
 
 
 # ---------------------------------------------------------------------------
