@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
+
 import httpx
+
+from darwin_tools.telemetry_queue import enqueue, flush_pending
 
 log = logging.getLogger(__name__)
 
@@ -82,14 +85,19 @@ class BackendClient:
         return resp.json()
 
     async def post_async(self, path: str, body: dict) -> None:
-        """Fire-and-forget — swallows errors so telemetry never blocks the agent."""
+        """Fire-and-forget — enqueue on failure for later flush."""
         try:
-            resp = await self._http.post(self.base + path, json=body)
+            resp = await self._http.post(self.base + path, json=body, timeout=_TIMEOUT_FIRE_AND_FORGET)
             self._check_revocation(resp)
+            resp.raise_for_status()
         except SystemExit:
-            raise   # propagate kill signal
+            raise
         except Exception:
-            pass
+            enqueue(path, body)
+
+    async def flush_queued_telemetry(self) -> int:
+        """Retry queued telemetry items (session start/end)."""
+        return await flush_pending(self)
 
     async def delete(self, path: str) -> dict:
         resp = await self._http.delete(self.base + path)

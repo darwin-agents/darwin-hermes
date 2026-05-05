@@ -115,15 +115,18 @@ automatically. Use `session_search` to recall specific past events.
 
 ## Model Routing Policy
 
-Before every LLM call, select the cheapest model capable of the task:
+Before every LLM call, select the cheapest model capable of the task. **Use OpenRouter
+model slugs** (`vendor/model`, e.g. `anthropic/claude-haiku-4.5`) — compare live prices on
+[openrouter.ai/models](https://openrouter.ai/models).
 
-| Task type                                      | Default model          |
-|------------------------------------------------|------------------------|
-| Repetitive extraction, simple classification   | claude-haiku-4-5       |
-| General reasoning, planning, tool calls        | claude-sonnet-4-6      |
-| Complex strategy, multi-step synthesis         | claude-opus-4-7        |
-| Vision-heavy tasks (JS apps, complex UIs)      | gpt-4o                 |
-| Fast vision checks, screenshot classification  | gpt-4o-mini            |
+| Task type                                      | Typical slug (tune to current pricing)                |
+|------------------------------------------------|-------------------------------------------------------|
+| Repetitive extraction, simple classification   | `anthropic/claude-haiku-4.5`                           |
+| General reasoning, planning, tool calls       | `anthropic/claude-sonnet-4`                            |
+| Complex strategy, multi-step synthesis         | `anthropic/claude-opus-4`                              |
+| Vision-heavy tasks (JS apps, complex UIs)       | `openai/gpt-4o`                                        |
+| Fast vision checks, screenshot classification   | `openai/gpt-4o-mini`                                   |
+| Marketing media (image/audio/video generation)  | Prefer capable multimodal slugs; justify cost in THOUGHT |
 
 Always justify model upgrades in your THOUGHT content. When spawning a neuron
 via `delegate_task`, include `model` and `model_reason` in each task spec.

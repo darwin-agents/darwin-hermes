@@ -1,10 +1,10 @@
 # Darwin Agent — Hermes config (rendered per-session by modal_app.py)
 # Jinja2 template — variables injected from modal_app._render_config()
 
-# --- Primary model ---
+# --- Primary model (OpenRouter slugs — e.g. anthropic/claude-* … ) ---
 model:
-  provider: anthropic
-  default: claude-opus-4-7
+  provider: openrouter
+  default: anthropic/claude-opus-4-7
 
 # --- Terminal backend: Modal sandboxes for every shell/file command ---
 terminal:

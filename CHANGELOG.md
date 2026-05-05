@@ -11,6 +11,25 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.3.0] — 2026-05-05
+
+### Added
+
+- **`darwin_tools/telemetry_queue.py`** — persists failed telemetry POSTs into `$HERMES_HOME/state.db`; `BackendClient.flush_queued_telemetry()` runs on session start/end.
+- **`darwin_tools/model_policy.py`** — OpenRouter slug helpers (`model_for_tier`, `pick_cheapest_by_capability`).
+- **`POST /telemetry/llm-call` idempotency** — `pnl_hooks` now sends a per-inference **`request_id`** plus optional multimodal usage fields echoed from Hermes/tokenizers.
+
+### Changed
+
+- **`config/config.yaml.j2`** — primary `model.provider: openrouter`; default model slug remains configurable (Hermes resolves via `OPENROUTER_API_KEY`).
+- **`prompts/SOUL.md`** — model routing table now documents **OpenRouter slugs** and marketing/multimodal guidance.
+- **Modal SDK compatibility:** `modal_app.py` now uses `Image.add_local_dir()` / `Image.add_local_file()` (replacing removed `copy_local_dir` / `copy_local_file`) for Modal client v1.x deploys.
+- **Modal build fix:** local sources added to the image now use `copy=True` so subsequent build steps (`uv pip install -e /root/hermes-core[all]`, `uv pip install -e /root`) are valid under Modal v1.x image build rules.
+- **`darwin_tools/backend_client.post_async`** — treats non-2xx HTTP as failure and **enqueues** for retry instead of silently dropping payloads.
+- **Delegate neuron default model** — `OPENROUTER_DEFAULT_TASK_MODEL` (default `anthropic/claude-haiku-4.5`).
+
+---
+
 ## [0.2.1] — 2026-05-02
 
 Targeted improvements following post-refactor review.
@@ -140,7 +159,8 @@ Initial implementation of the Phase 1 MVP spec.
 - `uv.lock` — pinned lockfile (74 packages)
 - Modal image build uses `uv pip install --system` throughout; `requirements.txt` removed
 
-[Unreleased]: https://github.com/darwin-agents/darwin-agent/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/darwin-agents/darwin-agent/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/darwin-agents/darwin-agent/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/darwin-agents/darwin-agent/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/darwin-agents/darwin-agent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/darwin-agents/darwin-agent/releases/tag/v0.1.0

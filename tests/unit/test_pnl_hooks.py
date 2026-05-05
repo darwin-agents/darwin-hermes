@@ -253,8 +253,8 @@ async def test_pre_tool_call_emits_neuron_spawned_per_task(backend_mock):
 
 
 @pytest.mark.asyncio
-async def test_pre_tool_call_defaults_model_to_sonnet(backend_mock):
-    """When a task spec has no model, default to claude-sonnet-4-6."""
+async def test_pre_tool_call_defaults_model_to_openrouter_slug(backend_mock):
+    """When a task spec has no model, default to OPENROUTER_DEFAULT_TASK_MODEL slug."""
     captured: list[dict] = []
 
     async def capture(request, route):
@@ -269,7 +269,9 @@ async def test_pre_tool_call_defaults_model_to_sonnet(backend_mock):
     )
 
     spawned = [e for e in captured if e.get("event_type") == "NEURON_SPAWNED"]
-    assert spawned[0]["payload"]["model"] == "claude-sonnet-4-6"
+    slug = spawned[0]["payload"]["model"]
+    assert "/" in slug  # OpenRouter slug
+    assert "claude" in slug.lower()
     assert spawned[0]["payload"]["model_reason"] is None
 
 

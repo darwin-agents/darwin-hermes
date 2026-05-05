@@ -19,6 +19,7 @@ import os
 import re
 import json
 import time
+import uuid
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +46,10 @@ async def _on_session_start(**kwargs):
 
     from .backend_client import get_backend_client
     client = get_backend_client()
+    try:
+        await client.flush_queued_telemetry()
+    except Exception:
+        pass
     wake_prompt = os.environ.get("DARWIN_WAKE_PROMPT", "")
     await client.post_async("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,
@@ -73,6 +78,16 @@ async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **
     reasoning = usage.get("reasoning_tokens", 0)
     cost = _estimate_cost(model, in_tok, out_tok, cache_read_tokens=cache_read)
     provider = _model_to_provider(model)
+    request_id = str(usage.get("request_id") or uuid.uuid4())
+    in_mod = usage.get("input_modalities") or []
+    out_mod = usage.get("output_modalities") or []
+    if not isinstance(in_mod, list):
+        in_mod = []
+    if not isinstance(out_mod, list):
+        out_mod = []
+    image_n = int(usage.get("image_output_count", 0) or 0)
+    audio_s = float(usage.get("audio_output_seconds", 0) or 0)
+    video_s = float(usage.get("video_output_seconds", 0) or 0)
 
     _token_running_total += in_tok + out_tok
     _cost_running_total += cost
@@ -111,6 +126,12 @@ async def _post_llm_call(response, usage, model, duration_ms=0, turn_id=None, **
         "cost_usd": cost,
         "duration_ms": duration_ms,
         "turn_id": turn_id,
+        "request_id": request_id,
+        "input_modalities": in_mod,
+        "output_modalities": out_mod,
+        "image_output_count": image_n,
+        "audio_output_seconds": audio_s,
+        "video_output_seconds": video_s,
         "timestamp_ms": int(time.time() * 1000),
     })
 
@@ -147,7 +168,10 @@ async def _pre_tool_call(tool_name, args, **kwargs):
                     "neuron_id": neuron_id,
                     "task": str(task.get("task") or task.get("directive") or "")[:500],
                     "parent_event_id": "",
-                    "model": task.get("model", "claude-sonnet-4-6"),
+                    "model": task.get(
+                        "model",
+                        os.environ.get("OPENROUTER_DEFAULT_TASK_MODEL", "anthropic/claude-haiku-4.5"),
+                    ),
                     "model_reason": task.get("model_reason"),
                 },
                 "timestamp_ms": int(time.time() * 1000),
@@ -203,6 +227,10 @@ async def _on_session_end(**kwargs):
     """Final flush before container exit."""
     from .backend_client import get_backend_client, close_backend_client
     client = get_backend_client()
+    try:
+        await client.flush_queued_telemetry()
+    except Exception:
+        pass
     # Use post_async — a telemetry failure must not prevent volume.commit()
     await client.post_async("/telemetry/stream-event", {
         "darwin_id": client.darwin_id,

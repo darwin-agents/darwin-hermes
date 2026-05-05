@@ -82,7 +82,7 @@ cd darwin-agent
 ```bash
 make setup          # submodule + uv sync --extra dev + editable Hermes + editable darwin_tools
 cp .env.example .env
-# Fill in ANTHROPIC_API_KEY, DARWIN_BACKEND_URL, etc.
+# Fill in OPENROUTER_API_KEY (primary LLM), DARWIN_BACKEND_URL, etc.
 ```
 
 **Manual (same as `make setup`):**
@@ -168,7 +168,7 @@ God Layer spawns Modal container
     on_session_start hook → AGENT_WOKE event pushed
 
     Agent runs (check_ledger first, then work…)
-            ├─ Every LLM call: post_llm_call hook → /telemetry/stream
+            ├─ Every LLM call: post_llm_call hook → /telemetry/llm-call + rolling /telemetry/stream
             └─ Every tool call: pre/post_tool_call hooks → canvas events
 
     Agent calls hibernate()
@@ -192,7 +192,6 @@ Create the Modal secret once:
 
 ```bash
 modal secret create darwin-agent-secrets \
-  ANTHROPIC_API_KEY=... \
   OPENROUTER_API_KEY=... \
   BROWSERBASE_API_KEY=... \
   BROWSERBASE_PROJECT_ID=... \

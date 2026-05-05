@@ -37,12 +37,12 @@ image = (
     .apt_install(["git", "curl", "ripgrep", "ffmpeg"])
     .run_commands("curl -Ls https://astral.sh/uv/install.sh | sh")
     .env({"PATH": "/root/.local/bin:/usr/local/bin:/usr/bin:/bin"})
-    .copy_local_dir("hermes-core",    "/root/hermes-core")
-    .copy_local_dir("darwin_tools",   "/root/darwin_tools")
-    .copy_local_dir("darwin_skills",  "/root/darwin_skills")
-    .copy_local_file("prompts/SOUL.md",           "/root/SOUL.md")
-    .copy_local_file("config/config.yaml.j2",     "/root/config.yaml.j2")
-    .copy_local_file("pyproject.toml",            "/root/pyproject.toml")
+    .add_local_dir("hermes-core",    "/root/hermes-core", copy=True)
+    .add_local_dir("darwin_tools",   "/root/darwin_tools", copy=True)
+    .add_local_dir("darwin_skills",  "/root/darwin_skills", copy=True)
+    .add_local_file("prompts/SOUL.md",           "/root/SOUL.md", copy=True)
+    .add_local_file("config/config.yaml.j2",     "/root/config.yaml.j2", copy=True)
+    .add_local_file("pyproject.toml",            "/root/pyproject.toml", copy=True)
     .run_commands(
         "uv pip install --system -e /root/hermes-core[all]",
         "uv pip install --system -e /root",   # registers darwin_tools entry point
