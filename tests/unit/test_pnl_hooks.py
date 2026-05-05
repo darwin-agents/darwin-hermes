@@ -146,11 +146,10 @@ def test_extract_empty_content_list():
 # _post_llm_call — THOUGHT event emission
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_post_llm_call_emits_thought_event(backend_mock):
+def test_post_llm_call_emits_thought_event(backend_mock):
     captured: list[dict] = []
 
-    async def capture(request, route):
+    def capture(request, route=None):
         captured.append(json.loads(request.content))
         return __import__("httpx").Response(200, json={"event_id": "ev-1"})
 
@@ -163,7 +162,7 @@ async def test_post_llm_call_emits_thought_event(backend_mock):
     )
 
     response = _AnthropicResponse("I will spawn two researcher neurons.")
-    await _post_llm_call(
+    _post_llm_call(
         response=response,
         usage={"input_tokens": 1200, "output_tokens": 90, "cache_read_input_tokens": 0, "reasoning_tokens": 0},
         model="claude-sonnet-4-6",
@@ -180,12 +179,11 @@ async def test_post_llm_call_emits_thought_event(backend_mock):
     assert "I will spawn two researcher neurons." in payload["content"]
 
 
-@pytest.mark.asyncio
-async def test_post_llm_call_thought_model_always_set(backend_mock):
+def test_post_llm_call_thought_model_always_set(backend_mock):
     """model must be present in every THOUGHT event regardless of token counts."""
     captured: list[dict] = []
 
-    async def capture(request, route):
+    def capture(request, route=None):
         captured.append(json.loads(request.content))
         return __import__("httpx").Response(200, json={"event_id": "ev-2"})
 
@@ -197,7 +195,7 @@ async def test_post_llm_call_thought_model_always_set(backend_mock):
         return_value=__import__("httpx").Response(202, json={"queued": True})
     )
 
-    await _post_llm_call(
+    _post_llm_call(
         response=None,
         usage={"input_tokens": 0, "output_tokens": 0},
         model="claude-haiku-4-5",
@@ -212,17 +210,16 @@ async def test_post_llm_call_thought_model_always_set(backend_mock):
 # _pre_tool_call — NEURON_SPAWNED emission for delegate_task
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_pre_tool_call_emits_neuron_spawned_per_task(backend_mock):
+def test_pre_tool_call_emits_neuron_spawned_per_task(backend_mock):
     captured: list[dict] = []
 
-    async def capture(request, route):
+    def capture(request, route=None):
         captured.append(json.loads(request.content))
         return __import__("httpx").Response(200, json={"event_id": "ev-3"})
 
     backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
 
-    await _pre_tool_call(
+    _pre_tool_call(
         tool_name="delegate_task",
         args={
             "tasks": [
@@ -252,18 +249,17 @@ async def test_pre_tool_call_emits_neuron_spawned_per_task(backend_mock):
     assert first["payload"]["model_reason"] == "Repetitive extraction — Haiku sufficient"
 
 
-@pytest.mark.asyncio
-async def test_pre_tool_call_defaults_model_to_openrouter_slug(backend_mock):
+def test_pre_tool_call_defaults_model_to_openrouter_slug(backend_mock):
     """When a task spec has no model, default to OPENROUTER_DEFAULT_TASK_MODEL slug."""
     captured: list[dict] = []
 
-    async def capture(request, route):
+    def capture(request, route=None):
         captured.append(json.loads(request.content))
         return __import__("httpx").Response(200, json={"event_id": "ev-4"})
 
     backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
 
-    await _pre_tool_call(
+    _pre_tool_call(
         tool_name="delegate_task",
         args={"tasks": [{"role": "analyst", "task": "Summarise research"}]},
     )
@@ -275,18 +271,17 @@ async def test_pre_tool_call_defaults_model_to_openrouter_slug(backend_mock):
     assert spawned[0]["payload"]["model_reason"] is None
 
 
-@pytest.mark.asyncio
-async def test_pre_tool_call_non_delegate_no_neuron_spawned(backend_mock):
+def test_pre_tool_call_non_delegate_no_neuron_spawned(backend_mock):
     """Non-delegate_task calls must NOT emit NEURON_SPAWNED."""
     captured: list[dict] = []
 
-    async def capture(request, route):
+    def capture(request, route=None):
         captured.append(json.loads(request.content))
         return __import__("httpx").Response(200, json={"event_id": "ev-5"})
 
     backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
 
-    await _pre_tool_call(tool_name="web_search", args={"query": "competitor pricing"})
+    _pre_tool_call(tool_name="web_search", args={"query": "competitor pricing"})
 
     spawned = [e for e in captured if e.get("event_type") == "NEURON_SPAWNED"]
     assert len(spawned) == 0

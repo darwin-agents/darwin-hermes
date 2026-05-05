@@ -23,15 +23,7 @@ def hermes_home_env(tmp_path):
     yield
     # Reset singletons between tests
     import darwin_tools.backend_client as bc
-    if bc._client is not None:
-        # The persistent httpx.AsyncClient must be closed before reset.
-        # In sync test teardown we can't await, so we close the transport directly.
-        try:
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(bc._client.close())
-        except Exception:
-            pass
-        bc._client = None
+    bc.close_backend_client_sync()
     import darwin_tools.entities as ent
     if ent._conn is not None:
         ent._conn.close()

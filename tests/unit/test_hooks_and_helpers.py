@@ -9,14 +9,13 @@ Fills the gaps identified in the audit:
 """
 
 import json
-import os
+
 import pytest
 
 from darwin_tools.pnl_hooks import (
     _model_to_provider,
     _on_session_end,
     _on_session_start,
-    _post_llm_call,
     _subagent_stop,
     _redact_str,
 )
@@ -60,17 +59,16 @@ class TestModelToProvider:
 # T1: _on_session_start — AGENT_WOKE event
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_on_session_start_emits_agent_woke(backend_mock):
+def test_on_session_start_emits_agent_woke(backend_mock):
     captured: list[dict] = []
 
-    async def capture(request, route):
+    def capture(request, route=None):
         captured.append(json.loads(request.content))
         return __import__("httpx").Response(200, json={"event_id": "ev-start"})
 
     backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
 
-    await _on_session_start()
+    _on_session_start()
 
     woke = [e for e in captured if e.get("event_type") == "AGENT_WOKE"]
     assert len(woke) == 1
@@ -78,26 +76,24 @@ async def test_on_session_start_emits_agent_woke(backend_mock):
     assert woke[0]["session_id"] == "test-session-01"
 
 
-@pytest.mark.asyncio
-async def test_on_session_start_reads_wake_prompt_from_env(backend_mock):
+def test_on_session_start_reads_wake_prompt_from_env(backend_mock):
     """wake_reason must come from DARWIN_WAKE_PROMPT env var, not kwargs."""
     captured: list[dict] = []
 
-    async def capture(request, route):
+    def capture(request, route=None):
         captured.append(json.loads(request.content))
         return __import__("httpx").Response(200, json={"event_id": "ev-start"})
 
     backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
 
     # The env var is set in conftest.py to "Test wake prompt"
-    await _on_session_start()
+    _on_session_start()
 
     woke = [e for e in captured if e.get("event_type") == "AGENT_WOKE"]
     assert woke[0]["payload"]["wake_reason"] == "Test wake prompt"
 
 
-@pytest.mark.asyncio
-async def test_on_session_start_resets_running_totals(backend_mock):
+def test_on_session_start_resets_running_totals(backend_mock):
     """Session start must zero the running totals."""
     import darwin_tools.pnl_hooks as hooks
 
@@ -105,7 +101,7 @@ async def test_on_session_start_resets_running_totals(backend_mock):
     hooks._token_running_total = 99999
     hooks._cost_running_total = 99.99
 
-    await _on_session_start()
+    _on_session_start()
 
     assert hooks._token_running_total == 0
     assert hooks._cost_running_total == 0.0
@@ -115,11 +111,10 @@ async def test_on_session_start_resets_running_totals(backend_mock):
 # T2: _on_session_end — SESSION_ENDED event
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_on_session_end_emits_session_ended(backend_mock):
+def test_on_session_end_emits_session_ended(backend_mock):
     captured: list[dict] = []
 
-    async def capture(request, route):
+    def capture(request, route=None):
         captured.append(json.loads(request.content))
         return __import__("httpx").Response(200, json={"event_id": "ev-end"})
 
@@ -132,7 +127,7 @@ async def test_on_session_end_emits_session_ended(backend_mock):
     hooks._token_running_total = 5000
     hooks._cost_running_total = 0.042
 
-    await _on_session_end()
+    _on_session_end()
 
     ended = [e for e in captured if e.get("event_type") == "SESSION_ENDED"]
     assert len(ended) == 1
@@ -142,9 +137,8 @@ async def test_on_session_end_emits_session_ended(backend_mock):
     assert payload["duration_seconds"] >= 119  # ~120s, allow small jitter
 
 
-@pytest.mark.asyncio
-async def test_on_session_end_does_not_crash_on_backend_failure(backend_mock):
-    """SESSION_ENDED uses post_async — backend failures must not raise."""
+def test_on_session_end_does_not_crash_on_backend_failure(backend_mock):
+    """SESSION_ENDED uses post_sync — backend failures must not raise."""
     backend_mock.post("/api/v1/telemetry/stream-event").mock(
         side_effect=__import__("httpx").ConnectError("backend down")
     )
@@ -154,24 +148,23 @@ async def test_on_session_end_does_not_crash_on_backend_failure(backend_mock):
     hooks._session_start = time.time()
 
     # Must not raise
-    await _on_session_end()
+    _on_session_end()
 
 
 # ---------------------------------------------------------------------------
 # T3: _subagent_stop — NEURON_COMPLETED / NEURON_FAILED
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_subagent_stop_completed(backend_mock):
+def test_subagent_stop_completed(backend_mock):
     captured: list[dict] = []
 
-    async def capture(request, route):
+    def capture(request, route=None):
         captured.append(json.loads(request.content))
         return __import__("httpx").Response(200, json={"event_id": "ev-sub"})
 
     backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
 
-    await _subagent_stop(
+    _subagent_stop(
         parent_session_id="sess-parent",
         child_role="researcher_A",
         child_status="completed",
@@ -184,17 +177,16 @@ async def test_subagent_stop_completed(backend_mock):
     assert events[0]["payload"]["duration_ms"] == 3400
 
 
-@pytest.mark.asyncio
-async def test_subagent_stop_failed(backend_mock):
+def test_subagent_stop_failed(backend_mock):
     captured: list[dict] = []
 
-    async def capture(request, route):
+    def capture(request, route=None):
         captured.append(json.loads(request.content))
         return __import__("httpx").Response(200, json={"event_id": "ev-sub"})
 
     backend_mock.post("/api/v1/telemetry/stream-event").mock(side_effect=capture)
 
-    await _subagent_stop(
+    _subagent_stop(
         parent_session_id="sess-parent",
         child_role="scraper_B",
         child_status="failed",
