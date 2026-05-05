@@ -28,10 +28,26 @@ committed; we therefore use one named volume and isolate each Darwin under a sub
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import modal
+
+
+def _bootstrap_modal_runtime() -> None:
+    """Emit INFO logs + Hermes messages to stderr so Modal's Logs tab is useful."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+        force=True,
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Single Modal Volume for all Darwins (one subdirectory per darwin_id). Created on first deploy/run.
 DARWIN_STATE_VOLUME = modal.Volume.from_name("darwin-agents-state", create_if_missing=True)
@@ -89,11 +105,23 @@ def run_agent(
     vcc_ref is the per-Darwin opaque token for VCC injection — never the raw PAN.
     Modal mounts the Volume → we bootstrap env → Hermes takes over.
     """
+    _bootstrap_modal_runtime()
+    log = logging.getLogger("darwin.modal")
+
     # Validate required args early with clear errors
     for name, val in [("darwin_id", darwin_id), ("session_id", session_id),
                       ("agent_jwt", agent_jwt), ("backend_url", backend_url)]:
         if not val:
             raise ValueError(f"run_agent: required argument '{name}' is empty")
+
+    netloc = urlparse(backend_url).netloc or backend_url
+    log.info(
+        "Darwin spawn darwin_id=%s session_id=%s backend_host=%s wake_chars=%d",
+        darwin_id,
+        session_id,
+        netloc,
+        len(wake_prompt or ""),
+    )
 
     asyncio.run(_run_agent_async(darwin_id, session_id, wake_prompt, agent_jwt, backend_url, vcc_ref))
 
@@ -123,13 +151,20 @@ async def _run_agent_async(
     os.environ["DARWIN_ID"]          = darwin_id
     os.environ["DARWIN_SESSION_ID"]  = session_id
     os.environ["DARWIN_AGENT_JWT"]   = agent_jwt
-    os.environ["DARWIN_BACKEND_URL"] = backend_url
+    from darwin_tools.backend_client import normalize_backend_base_url
+
+    os.environ["DARWIN_BACKEND_URL"] = normalize_backend_base_url(backend_url)
     os.environ["DARWIN_WAKE_PROMPT"] = wake_prompt
     # VCC_REF is per-Darwin — passed as a spawn-time arg, NOT a static Modal Secret
     os.environ["DARWIN_VCC_REF"] = vcc_ref
 
     # 4. Hand off to Hermes
     from darwin_tools.lifecycle import DarwinHibernateSignal
+
+    logging.getLogger("darwin.modal").info(
+        "HERMES_HOME=%s — starting Hermes session",
+        os.environ.get("HERMES_HOME", ""),
+    )
 
     try:
         try:
@@ -207,14 +242,46 @@ def _run_session_via_aiagent(user_message: str) -> None:
     if max_tokens is None:
         max_tokens = 4096
 
+    _verbose = (os.environ.get("DARWIN_HERMES_VERBOSE") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+    log = logging.getLogger("darwin.modal")
+    log.info(
+        "AIAgent path: provider=%s model=%s max_tokens=%s max_iterations=%s quiet=%s",
+        provider,
+        model_id,
+        max_tokens,
+        max_iterations,
+        not _verbose,
+    )
+
     agent = AIAgent(
         provider=provider,
         model=model_id,
         max_iterations=max_iterations,
         max_tokens=max_tokens,
-        quiet_mode=True,
+        quiet_mode=not _verbose,
     )
-    agent.run_conversation(user_message)
+    try:
+        result = agent.run_conversation(user_message)
+    except Exception:
+        log.exception("run_conversation raised — see traceback below")
+        raise
+
+    preview = (result.get("final_response") or "")[:200].replace("\n", " ")
+    log.info(
+        "run_conversation finished api_calls=%s completed=%s turn_exit=%s "
+        "session_tokens=%s/%s preview=%r",
+        result.get("api_calls"),
+        result.get("completed"),
+        result.get("turn_exit_reason"),
+        result.get("input_tokens"),
+        result.get("output_tokens"),
+        preview,
+    )
 
 
 async def _render_config(
