@@ -104,7 +104,7 @@ To carry Hermes changes (for example wiring OpenRouter completion ``usage`` into
 
 ## Makefile
 
-From `darwin-agent/`, run **`make help`**. Targets include **`make setup`** (ordered: submodule init/update, `uv sync --extra dev`, `uv pip install -e hermes-core[all]`, `uv pip install -e .`), **`make install`** / **`make sync`**, **`make submodule`**, **`make hermes`**, **`make editable`**, **`make test`** (optional `PYTEST_ARGS="…"`), **`make deploy`** (`modal deploy`; override entry file with `MODAL_APP=…`), **`make clean`**, and **`make upgrade-hermes`** (submodule track remote, `uv sync --extra dev`, reinstall editable Hermes). Override **`UV`** if your `uv` binary is not on `PATH`.
+From `darwin-agent/`, run **`make help`**. Targets include **`make setup`** (ordered: submodule init/update, `uv sync --extra dev`, `uv pip install -e hermes-core[all]`, `uv pip install -e .`), **`make install`** / **`make sync`**, **`make submodule`**, **`make hermes`**, **`make editable`**, **`make test`** (optional `PYTEST_ARGS="…"`), **`make smoke-local`** (boots local backend + runs deterministic end-to-end agent flow via `scripts/smoke_local.py`), **`make deploy`** (`modal deploy`; override entry file with `MODAL_APP=…`), **`make clean`**, and **`make upgrade-hermes`** (submodule track remote, `uv sync --extra dev`, reinstall editable Hermes). Override **`UV`** if your `uv` binary is not on `PATH`.
 
 ---
 
@@ -140,7 +140,7 @@ Hermes calls `register(ctx)` at session start. All 9 proprietary tools and 7 hoo
 | Built-in | Replaces |
 |---|---|
 | `browser_navigate`, `browser_snapshot`, `browser_vision`, `browser_click` | browser.py |
-| `web_search`, `web_extract` | browser_fetch |
+| `web_search`, `web_extract` *(optional; depends on web-tools/toolset config)* | browser_fetch |
 | `skill_manage`, `skill_view`, `skills_list` | save_skill, search_skills |
 | `session_search` | search_memory |
 | `delegate_task` | NeuronRunner, spawn_neuron |
