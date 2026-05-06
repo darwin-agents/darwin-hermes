@@ -22,11 +22,11 @@ def tools(ctx):
 
 @pytest.mark.asyncio
 async def test_save_entity_writes_to_sqlite(tools, hermes_home_env, backend_mock):
-    result = await tools["save_entity"]({
+    result = json.loads(await tools["save_entity"]({
         "entity_type": "account",
         "entity_id": "acc-001",
         "data": {"name": "Stripe", "url": "stripe.com"},
-    })
+    }))
     assert result["saved"] is True
 
     row = _get_db().execute(
@@ -56,11 +56,11 @@ async def test_save_entity_synced_false_on_backend_failure(tools, hermes_home_en
     backend_mock.post("/api/v1/telemetry/entity").mock(
         side_effect=httpx.ConnectError("backend down")
     )
-    result = await tools["save_entity"]({
+    result = json.loads(await tools["save_entity"]({
         "entity_type": "product",
         "entity_id": "prod-fail",
         "data": {"name": "widget"},
-    })
+    }))
     assert result["saved"] is True
     assert result["synced"] is False
     assert result["retry_on_next_session"] is True

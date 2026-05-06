@@ -47,11 +47,11 @@ async def test_log_decision_posts_to_audit_endpoint(audit, backend_mock):
         return __import__("httpx").Response(200, json={"ok": True})
     backend_mock.post("/api/v1/audit/log").mock(side_effect=capture)
 
-    result = await audit({
+    result = json.loads(await audit({
         "event_type": "VCC_PURCHASE",
         "decision": "Paying $20 for Shopify subscription",
         "financial_impact": -20.0,
-    })
+    }))
     assert result["logged"] is True
     assert len(bodies) == 1
     assert bodies[0]["event_type"] == "VCC_PURCHASE"
@@ -96,11 +96,11 @@ async def test_send_email_delegates_to_backend(email, backend_mock):
         return __import__("httpx").Response(200, json={"sent": True, "message_id": "msg-1"})
     backend_mock.post("/api/v1/comms/send-email").mock(side_effect=capture)
 
-    result = await email({
+    result = json.loads(await email({
         "to": "supplier@example.com",
         "subject": "Wholesale inquiry",
         "body": "Hi, I am interested in your products.",
-    })
+    }))
     assert result["sent"] is True
     assert len(bodies) == 1
     assert bodies[0]["to"] == "supplier@example.com"
@@ -135,11 +135,11 @@ async def test_upload_file_returns_asset_url(upload, backend_mock):
         path = f.name
 
     try:
-        result = await upload({
+        result = json.loads(await upload({
             "filepath": path,
             "description": "Supplier price comparison",
             "content_type": "text/csv",
-        })
+        }))
         assert result["asset_id"] == "asset-1"
         assert "storage" in result["public_url"]
     finally:

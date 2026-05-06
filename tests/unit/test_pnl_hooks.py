@@ -52,105 +52,74 @@ def test_redact_strips_jwt():
     assert "[REDACTED]" in redacted
 
 
+def _patch_pricing(pricing_map: dict):
+    """Context manager: inject a fake _OR_PRICING dict and reset afterwards."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _ctx():
+        original = pnl_hooks._OR_PRICING.copy()
+        original_fetched = pnl_hooks._OR_PRICING_FETCHED
+        original_next_retry = pnl_hooks._OR_PRICING_NEXT_RETRY
+        try:
+            pnl_hooks._OR_PRICING.clear()
+            pnl_hooks._OR_PRICING.update(pricing_map)
+            pnl_hooks._OR_PRICING_FETCHED = True   # prevent real HTTP fetch
+            pnl_hooks._OR_PRICING_NEXT_RETRY = 0
+            yield
+        finally:
+            pnl_hooks._OR_PRICING.clear()
+            pnl_hooks._OR_PRICING.update(original)
+            pnl_hooks._OR_PRICING_FETCHED = original_fetched
+            pnl_hooks._OR_PRICING_NEXT_RETRY = original_next_retry
+
+    return _ctx()
+
+
 def test_estimate_cost_known_model_returns_positive_cost():
-    class FakeCanonicalUsage:
-        def __init__(self, input_tokens, output_tokens, cache_read_tokens):
-            self.input_tokens = input_tokens
-            self.output_tokens = output_tokens
-            self.cache_read_tokens = cache_read_tokens
-
-    def fake_estimate_usage_cost(model, usage, **kwargs):
-        assert model == "claude-haiku-4-5-20251001"
-        assert usage.input_tokens == 1000
-        assert usage.output_tokens == 200
-        return SimpleNamespace(amount_usd=Decimal("0.0018"))
-
-    original = pnl_hooks._estimate_usage_cost
-    original_usage = pnl_hooks._CanonicalUsage
-    try:
-        pnl_hooks._CanonicalUsage = FakeCanonicalUsage
-        pnl_hooks._estimate_usage_cost = fake_estimate_usage_cost
-        cost = _estimate_cost("claude-haiku-4-5-20251001", 1000, 200)
-    finally:
-        pnl_hooks._estimate_usage_cost = original
-        pnl_hooks._CanonicalUsage = original_usage
-    assert cost == 0.0018
+    pricing = {"anthropic/claude-sonnet-4-5": {"prompt": "0.000003", "completion": "0.000015"}}
+    with _patch_pricing(pricing):
+        # 1000 input * 0.000003 + 200 output * 0.000015 = 0.003 + 0.003 = 0.006
+        cost = _estimate_cost("anthropic/claude-sonnet-4-5", 1000, 200)
+    assert cost == pytest.approx(0.006, rel=1e-6)
 
 
 def test_estimate_cost_unknown_model_returns_zero():
-    # Unknown pricing should safely degrade to 0.0.
-    class FakeCanonicalUsage:
-        def __init__(self, input_tokens, output_tokens, cache_read_tokens):
-            self.input_tokens = input_tokens
-            self.output_tokens = output_tokens
-            self.cache_read_tokens = cache_read_tokens
-
-    def fake_estimate_usage_cost(*args, **kwargs):
-        return SimpleNamespace(amount_usd=None)
-
-    original = pnl_hooks._estimate_usage_cost
-    original_usage = pnl_hooks._CanonicalUsage
-    try:
-        pnl_hooks._CanonicalUsage = FakeCanonicalUsage
-        pnl_hooks._estimate_usage_cost = fake_estimate_usage_cost
+    with _patch_pricing({}):
         cost = _estimate_cost("totally-unknown-model-xyz", 1000, 200)
-    finally:
-        pnl_hooks._estimate_usage_cost = original
-        pnl_hooks._CanonicalUsage = original_usage
     assert cost == 0.0
 
 
-def test_estimate_cost_openrouter_prefix_stripped():
-    # OpenRouter slug should be passed as-is to Hermes/OpenRouter estimator.
-    captured = {}
-    class FakeCanonicalUsage:
-        def __init__(self, input_tokens, output_tokens, cache_read_tokens):
-            self.input_tokens = input_tokens
-            self.output_tokens = output_tokens
-            self.cache_read_tokens = cache_read_tokens
-
-    def fake_estimate_usage_cost(model, usage, **kwargs):
-        captured["model"] = model
-        return SimpleNamespace(amount_usd=Decimal("0.00042"))
-
-    original = pnl_hooks._estimate_usage_cost
-    original_usage = pnl_hooks._CanonicalUsage
-    try:
-        pnl_hooks._CanonicalUsage = FakeCanonicalUsage
-        pnl_hooks._estimate_usage_cost = fake_estimate_usage_cost
+def test_estimate_cost_openrouter_prefix_kept():
+    # OpenRouter slug should be looked up as-is (no prefix stripping).
+    pricing = {"anthropic/claude-haiku-4.5": {"prompt": "0.00000025", "completion": "0.00000125"}}
+    with _patch_pricing(pricing):
         cost = _estimate_cost("anthropic/claude-haiku-4.5", 1000, 200)
-    finally:
-        pnl_hooks._estimate_usage_cost = original
-        pnl_hooks._CanonicalUsage = original_usage
-    assert captured["model"] == "anthropic/claude-haiku-4.5"
-    assert cost == 0.00042
+    assert cost == pytest.approx(1000 * 0.00000025 + 200 * 0.00000125, rel=1e-6)
 
 
-def test_estimate_cost_openrouter_prefix_no_warning(caplog):
+def test_estimate_cost_openrouter_no_warning_for_known_model(caplog):
     import logging
-    class FakeCanonicalUsage:
-        def __init__(self, input_tokens, output_tokens, cache_read_tokens):
-            self.input_tokens = input_tokens
-            self.output_tokens = output_tokens
-            self.cache_read_tokens = cache_read_tokens
-
-    def fake_estimate_usage_cost(*args, **kwargs):
-        return SimpleNamespace(amount_usd=Decimal("0.00011"))
-
-    original = pnl_hooks._estimate_usage_cost
-    original_usage = pnl_hooks._CanonicalUsage
+    pricing = {"anthropic/claude-haiku-4.5": {"prompt": "0.00000025", "completion": "0.00000125"}}
     with caplog.at_level(logging.WARNING, logger="darwin_tools.pnl_hooks"):
-        try:
-            pnl_hooks._CanonicalUsage = FakeCanonicalUsage
-            pnl_hooks._estimate_usage_cost = fake_estimate_usage_cost
+        with _patch_pricing(pricing):
             _estimate_cost("anthropic/claude-haiku-4.5", 1000, 200)
-        finally:
-            pnl_hooks._estimate_usage_cost = original
-            pnl_hooks._CanonicalUsage = original_usage
-    # The "Could not resolve cost" warning must NOT fire for a known model
-    # accessed via its OpenRouter-prefixed slug.
     resolve_warnings = [r for r in caplog.records if "Could not resolve cost" in r.message]
     assert resolve_warnings == [], f"Unexpected warning: {[r.message for r in resolve_warnings]}"
+
+
+def test_estimate_cost_cache_read_tokens():
+    pricing = {
+        "anthropic/claude-sonnet-4-5": {
+            "prompt": "0.000003",
+            "completion": "0.000015",
+            "input_cache_read": "0.0000003",
+        }
+    }
+    with _patch_pricing(pricing):
+        cost = _estimate_cost("anthropic/claude-sonnet-4-5", 1000, 200, cache_read_tokens=500)
+    expected = 1000 * 0.000003 + 200 * 0.000015 + 500 * 0.0000003
+    assert cost == pytest.approx(expected, rel=1e-6)
 
 
 def test_hooks_registered(ctx):

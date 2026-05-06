@@ -83,7 +83,7 @@ _schema_save_entity = {
 }
 
 
-async def _handle_save_entity(params: dict, **kwargs) -> dict:
+async def _handle_save_entity(params: dict, **kwargs) -> str:
     entity_type = params["entity_type"]
     entity_id = params["entity_id"]
     data = params["data"]
@@ -120,7 +120,7 @@ async def _handle_save_entity(params: dict, **kwargs) -> dict:
             (now, entity_id),
         )
         conn.commit()
-        return {"saved": True, "synced": True}
+        return json.dumps({"saved": True, "synced": True})
     except Exception:
-        return {"saved": True, "synced": False, "retry_on_next_session": True}
+        return json.dumps({"saved": True, "synced": False, "retry_on_next_session": True})
     # No conn.close() — _conn is module-level and reused for the container's lifetime

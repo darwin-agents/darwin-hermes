@@ -7,6 +7,8 @@ send_email: delegate to the God Layer which handles provider routing
 
 from __future__ import annotations
 
+import json
+
 
 def register_comms_tools(ctx) -> None:
     ctx.register_tool(
@@ -41,13 +43,14 @@ _schema_send_email = {
 }
 
 
-async def _handle_send_email(params: dict, **kwargs) -> dict:
+async def _handle_send_email(params: dict, **kwargs) -> str:
     from .backend_client import get_backend_client
     client = get_backend_client()
-    return await client.post("/comms/send-email", {
+    resp = await client.post("/comms/send-email", {
         "darwin_id": client.darwin_id,
         "to": params["to"],
         "subject": params["subject"],
         "body": params["body"],
         "from_name": params.get("from_name"),
     })
+    return json.dumps(resp)

@@ -27,13 +27,18 @@ import uuid
 
 log = logging.getLogger(__name__)
 
-try:
-    # `hermes-core` pricing helper: OpenRouter models API lookup + cache.
-    from agent.usage_pricing import CanonicalUsage as _CanonicalUsage
-    from agent.usage_pricing import estimate_usage_cost as _estimate_usage_cost
-except Exception:  # pragma: no cover - runtime fallback when hermes import is unavailable
-    _CanonicalUsage = None
-    _estimate_usage_cost = None
+import threading
+
+# ---------------------------------------------------------------------------
+# OpenRouter pricing cache
+# Populated lazily from GET https://openrouter.ai/api/v1/models.
+# Retried with exponential back-off so a transient failure at session start
+# doesn't permanently disable cost tracking for the whole run.
+# ---------------------------------------------------------------------------
+_OR_PRICING: dict[str, dict] = {}
+_OR_PRICING_LOCK = threading.Lock()
+_OR_PRICING_FETCHED = False        # True once a successful fetch has populated the cache
+_OR_PRICING_NEXT_RETRY: float = 0  # monotonic timestamp; 0 = try immediately
 
 _session_start: float | None = None
 _token_running_total = 0
@@ -318,6 +323,61 @@ def _model_to_provider(model: str) -> str:
     return "openrouter"
 
 
+def _load_openrouter_pricing() -> dict[str, dict]:
+    """
+    Return the OpenRouter model→pricing dict, fetching/retrying as needed.
+
+    Strategy:
+    - On success the cache is populated once and reused for the rest of the session.
+    - On failure we wait _OR_RETRY_DELAYS[attempt] seconds before the next attempt,
+      so a transient network hiccup at container startup doesn't permanently disable
+      cost tracking.  After all retries are exhausted we log at WARNING every call.
+    """
+    import time as _time
+
+    # Retry delays (seconds): 5 s → 15 s → 60 s → give up
+    _OR_RETRY_DELAYS = (5, 15, 60)
+
+    global _OR_PRICING, _OR_PRICING_FETCHED, _OR_PRICING_NEXT_RETRY
+    with _OR_PRICING_LOCK:
+        if _OR_PRICING_FETCHED:
+            return _OR_PRICING
+        now = _time.monotonic()
+        if now < _OR_PRICING_NEXT_RETRY:
+            return _OR_PRICING  # in back-off window — return empty cache for now
+        try:
+            import httpx
+            base = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+            api_key = os.environ.get("OPENROUTER_API_KEY", "")
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            resp = httpx.get(f"{base}/models", headers=headers, timeout=10.0)
+            resp.raise_for_status()
+            fetched: dict[str, dict] = {}
+            for entry in resp.json().get("data", []):
+                mid = entry.get("id", "")
+                pricing = entry.get("pricing")
+                if mid and isinstance(pricing, dict):
+                    fetched[mid] = pricing
+            if not fetched:
+                raise ValueError("OpenRouter /models returned 0 entries")
+            _OR_PRICING.update(fetched)
+            _OR_PRICING_FETCHED = True
+            log.info("OpenRouter pricing loaded for %d models", len(_OR_PRICING))
+        except Exception as exc:
+            # Work out which retry slot we're in by counting prior attempts via
+            # how far _OR_PRICING_NEXT_RETRY has advanced from 0.
+            elapsed = now  # monotonic time since process start ≈ time since first attempt
+            delay_idx = sum(1 for d in _OR_RETRY_DELAYS if elapsed > sum(_OR_RETRY_DELAYS[:_OR_RETRY_DELAYS.index(d) + 1]))
+            delay = _OR_RETRY_DELAYS[min(delay_idx, len(_OR_RETRY_DELAYS) - 1)]
+            _OR_PRICING_NEXT_RETRY = now + delay
+            log.warning(
+                "OpenRouter /models fetch failed — %s  (retrying in %ds)",
+                exc,
+                delay,
+            )
+    return _OR_PRICING
+
+
 def _estimate_cost(
     model: str,
     input_tokens: int,
@@ -325,56 +385,34 @@ def _estimate_cost(
     cache_read_tokens: int = 0,
 ) -> float:
     """
-    Estimate cost using the `hermes-core` pricing helper (`usage_pricing.py`).
+    Estimate cost in USD for one LLM call using live OpenRouter pricing.
 
-    Order:
-      1) Use ``hermes-core/agent/usage_pricing.py`` (OpenRouter models API + cache)
-      2) Return 0.0 when pricing is unknown/unavailable
+    Pricing keys returned by OpenRouter (USD per token, as strings):
+      prompt            — input tokens
+      completion        — output tokens
+      input_cache_read  — cache-hit input tokens (Anthropic prompt caching)
+
+    Reports $0.00 (with a warning) only when the model is genuinely absent
+    from OpenRouter's catalogue after all retries have been exhausted.
     """
+    pricing = _load_openrouter_pricing().get(model)
+    if not pricing:
+        log.warning("Could not resolve cost for model %r — reporting $0.00", model)
+        return 0.0
     try:
-        estimated = _estimate_cost_openrouter(
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
+        prompt_price      = float(pricing.get("prompt", 0) or 0)
+        completion_price  = float(pricing.get("completion", 0) or 0)
+        cache_read_price  = float(pricing.get("input_cache_read", 0) or 0)
+        cost = (
+            input_tokens        * prompt_price
+            + output_tokens     * completion_price
+            + cache_read_tokens * cache_read_price
         )
-        if estimated is not None:
-            return estimated
-    except Exception:
-        pass
-    log.warning("Could not resolve cost for model %r — reporting $0.00", model)
-    return 0.0
-
-
-def _estimate_cost_openrouter(
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int = 0,
-) -> float | None:
-    """Return estimated USD from OpenRouter pricing metadata, else ``None``."""
-    if _estimate_usage_cost is None or _CanonicalUsage is None:
-        return None
-
-    usage = _CanonicalUsage(
-        input_tokens=max(0, int(input_tokens or 0)),
-        output_tokens=max(0, int(output_tokens or 0)),
-        cache_read_tokens=max(0, int(cache_read_tokens or 0)),
-    )
-    base_url = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-
-    result = _estimate_usage_cost(
-        model,
-        usage,
-        provider="openrouter",
-        base_url=base_url,
-        api_key=api_key,
-    )
-    amount = getattr(result, "amount_usd", None)
-    if amount is None:
-        return None
-    return max(0.0, float(amount))
+        return max(0.0, cost)
+    except (TypeError, ValueError) as exc:
+        log.debug("Pricing calculation failed for %r — %s", model, exc)
+        log.warning("Could not resolve cost for model %r — reporting $0.00", model)
+        return 0.0
 
 
 def _redact(args: dict) -> str:

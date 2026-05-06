@@ -4,18 +4,22 @@
 # --- Primary model (OpenRouter slugs — e.g. anthropic/claude-* … ) ---
 model:
   provider: openrouter
-  # Haiku keeps spend predictable on low balances; override with OPENROUTER_MODEL / OPENROUTER_DEFAULT_MODEL for Opus/Sonnet.
-  default: anthropic/claude-haiku-4.5
-  # Per-completion output cap. OpenRouter reserves against max_tokens — very large values can trigger HTTP 402 on limited credits.
-  max_tokens: 4096
+  # Sonnet is the minimum viable model for autonomous multi-step tool chaining.
+  # Haiku writes planning monologues and stops (finish_reason=stop) without executing.
+  # Override with OPENROUTER_MODEL env var to use Opus for complex sessions.
+  default: anthropic/claude-sonnet-4.5
+  # Per-completion output cap.
+  # 4096 was too low — Sonnet regularly generates >4k tokens when writing code or
+  # summarising research, truncating tool calls mid-stream (finish_reason='length').
+  # Hermes retries truncated calls, wasting tokens and latency.
+  # Claude Sonnet 4.5 supports up to 8192 output tokens via OpenRouter.
+  max_tokens: 8192
 
-# --- Terminal backend: Modal sandboxes for every shell/file command ---
+# --- Terminal backend: local (the Modal container IS the sandbox) ---
+# Using nested Modal sandboxes from inside a Modal container requires credentials
+# that don't exist inside the container — always use local execution here.
 terminal:
-  backend: modal
-  container_persistent: true
-  container_memory: 5120
-  container_disk: 51200
-  modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+  backend: local
 
 # --- Browser backends: three-layer strategy ---
 #

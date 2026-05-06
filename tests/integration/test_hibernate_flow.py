@@ -26,7 +26,7 @@ async def test_full_session_lifecycle(all_tools, backend_mock):
     The full happy path for a session that does work and then sleeps.
     """
     # 1. check_ledger
-    ledger = await all_tools["check_ledger"]({})
+    ledger = json.loads(await all_tools["check_ledger"]({}))
     assert ledger["balance"] == 80.00
     assert ledger["pct_remaining"] == 80.0
 
@@ -38,11 +38,11 @@ async def test_full_session_lifecycle(all_tools, backend_mock):
     })
 
     # 3. save_entity
-    entity_result = await all_tools["save_entity"]({
+    entity_result = json.loads(await all_tools["save_entity"]({
         "entity_type": "strategy",
         "entity_id": "strat-pet-001",
         "data": {"name": "Pet supplies dropship", "margin": "40-60%"},
-    })
+    }))
     assert entity_result["saved"] is True
 
     # 4. hibernate
@@ -61,11 +61,11 @@ async def test_full_session_lifecycle(all_tools, backend_mock):
 async def test_approval_then_hibernate_flow(all_tools, backend_mock):
     """request_approval → hibernate(wake_on_webhook=...) is the correct large-purchase flow."""
     # 1. Request approval for a large purchase
-    approval = await all_tools["request_approval"]({
+    approval = json.loads(await all_tools["request_approval"]({
         "amount": 50.00,
         "justification": "Facebook ads campaign — expected 300% ROI in 30 days",
         "token_roi_estimate": "300%",
-    })
+    }))
     webhook_key = approval["webhook_key"]
     assert webhook_key.startswith("approval_test-darwin-01_")
 

@@ -8,6 +8,7 @@ The file appears in the frontend's Assets tab for the creator to download.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import httpx
 
@@ -50,7 +51,7 @@ _schema_upload_file = {
 }
 
 
-async def _handle_upload_file(params: dict, **kwargs) -> dict:
+async def _handle_upload_file(params: dict, **kwargs) -> str:
     from .backend_client import get_backend_client
     client = get_backend_client()
 
@@ -78,4 +79,4 @@ async def _handle_upload_file(params: dict, **kwargs) -> dict:
         "darwin_id": client.darwin_id,
         "description": description,
     })
-    return {"asset_id": url_resp["asset_id"], "public_url": url_resp["public_url"]}
+    return json.dumps({"asset_id": url_resp["asset_id"], "public_url": url_resp["public_url"]})

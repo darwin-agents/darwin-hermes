@@ -8,6 +8,7 @@ The agent never holds raw VCC PAN — only an opaque vcc_ref token.
 
 from __future__ import annotations
 
+import json
 import os
 
 
@@ -49,7 +50,7 @@ _schema_check_ledger = {
 }
 
 
-async def _handle_check_ledger(params: dict, **kwargs) -> dict:
+async def _handle_check_ledger(params: dict, **kwargs) -> str:
     from .backend_client import get_backend_client
     client = get_backend_client()
     resp = await client.get(f"/finance/ledger/{client.darwin_id}")
@@ -57,12 +58,12 @@ async def _handle_check_ledger(params: dict, **kwargs) -> dict:
     budget = float(resp.get("initial_budget", 0) or 0)
     pct = round(balance / budget * 100, 1) if budget else 0.0
     txs = resp.get("transactions") or []
-    return {
+    return json.dumps({
         "balance": balance,
         "initial_budget": budget,
         "pct_remaining": pct,
         "recent_transactions": txs[:5],
-    }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +99,7 @@ _schema_record_expense = {
 }
 
 
-async def _handle_record_expense(params: dict, **kwargs) -> dict:
+async def _handle_record_expense(params: dict, **kwargs) -> str:
     from .backend_client import get_backend_client
     client = get_backend_client()
     resp = await client.post("/finance/ledger/update", {
@@ -109,7 +110,7 @@ async def _handle_record_expense(params: dict, **kwargs) -> dict:
         "description": params["description"],
         "external_ref": params.get("external_ref"),
     })
-    return resp
+    return json.dumps(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +146,7 @@ _schema_inject_payment = {
 }
 
 
-async def _handle_inject_payment(params: dict, **kwargs) -> dict:
+async def _handle_inject_payment(params: dict, **kwargs) -> str:
     """Agent never sees raw PAN/CVV — backend handles decryption + WebSocket injection."""
     from .backend_client import get_backend_client
     client = get_backend_client()
@@ -156,13 +157,13 @@ async def _handle_inject_payment(params: dict, **kwargs) -> dict:
         ledger = await client.get(f"/finance/ledger/{client.darwin_id}")
         current_balance = ledger.get("current_balance", 0)
         if amount > current_balance:
-            return {
+            return json.dumps({
                 "error": "INSUFFICIENT_BALANCE",
                 "message": (
                     f"Cannot inject ${amount:.2f} — current balance is ${current_balance:.2f}. "
                     f"Call check_ledger() to confirm, then adjust your strategy."
                 ),
-            }
+            })
     except SystemExit:
         raise
     except Exception:
@@ -177,7 +178,7 @@ async def _handle_inject_payment(params: dict, **kwargs) -> dict:
         "context_snapshot": {"session_id": client.session_id},
     })
 
-    return await client.post("/finance/inject-payment", {
+    resp = await client.post("/finance/inject-payment", {
         "darwin_id": client.darwin_id,
         "vcc_ref": os.environ.get("DARWIN_VCC_REF", ""),
         "browserbase_session_id": params["browserbase_session_id"],
@@ -189,3 +190,4 @@ async def _handle_inject_payment(params: dict, **kwargs) -> dict:
             "expiry_element": params["expiry_element"],
         },
     })
+    return json.dumps(resp)

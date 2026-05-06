@@ -6,6 +6,7 @@ Invariants:
 - request_approval returns a webhook_key and sends a notification
 """
 
+import json
 import pytest
 
 from darwin_tools.lifecycle import (
@@ -109,10 +110,10 @@ async def test_hibernate_with_webhook(tools):
 
 @pytest.mark.asyncio
 async def test_request_approval_returns_webhook_key(tools, backend_mock):
-    result = await tools["request_approval"]({
+    result = json.loads(await tools["request_approval"]({
         "amount": 50.00,
         "justification": "Facebook ads for pet niche — expected 300% ROI",
-    })
+    }))
     assert "webhook_key" in result
     assert result["webhook_key"].startswith("approval_test-darwin-01_")
 
@@ -142,7 +143,7 @@ async def test_request_approval_includes_webhook_key_in_payload(tools, backend_m
         return __import__("httpx").Response(200, json={"ok": True})
     backend_mock.post("/api/v1/notifications/send").mock(side_effect=capture)
 
-    result = await tools["request_approval"]({"amount": 30.00, "justification": "test"})
+    result = json.loads(await tools["request_approval"]({"amount": 30.00, "justification": "test"}))
     webhook_key = result["webhook_key"]
 
     assert "webhook_key" in sent[0], "webhook_key missing from notification payload"

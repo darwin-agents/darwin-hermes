@@ -38,9 +38,15 @@ import modal
 
 
 def _bootstrap_modal_runtime() -> None:
-    """Emit INFO logs + Hermes messages to stderr so Modal's Logs tab is useful."""
+    """Emit INFO logs + Hermes messages to stderr so Modal's Logs tab is useful.
+
+    Set ``DARWIN_LOG_LEVEL=DEBUG`` in the Modal secret to surface full tracebacks
+    from the Hermes outer loop (e.g. to pinpoint ``slice(None, 500, None)`` errors).
+    """
+    level_name = os.environ.get("DARWIN_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
         datefmt="%H:%M:%S",
         stream=sys.stderr,
@@ -85,8 +91,14 @@ app = modal.App("darwin-agent", image=image)
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
+# 3 hours of wall-clock per invocation.  The agent should self-hibernate well
+# before this (the deadline guard fires at T-120 s), but 3 h gives plenty of
+# headroom for long tasks without needing to resume.  Modal's hard ceiling is
+# 86 400 s (24 h) on paid plans — raise this if you need multi-hour sessions.
+_MODAL_TIMEOUT_SECS = 3 * 3600  # 10 800 s
+
 @app.function(
-    timeout=900,
+    timeout=_MODAL_TIMEOUT_SECS,
     memory=2048,
     cpu=2.0,
     volumes={STATE_MOUNT: DARWIN_STATE_VOLUME},
@@ -158,6 +170,11 @@ async def _run_agent_async(
     # VCC_REF is per-Darwin — passed as a spawn-time arg, NOT a static Modal Secret
     os.environ["DARWIN_VCC_REF"] = vcc_ref
 
+    # The agent IS the Modal container — code runs locally inside it.
+    # Override any TERMINAL_ENV=modal from the secret (which would try to spawn
+    # nested Modal sandboxes and fail: "no direct Modal credentials/config found").
+    os.environ["TERMINAL_ENV"] = "local"
+
     # 4. Hand off to Hermes
     from darwin_tools.lifecycle import DarwinHibernateSignal
 
@@ -177,7 +194,11 @@ async def _run_agent_async(
             )
         except ModuleNotFoundError:
             # Newer Hermes revisions expose AIAgent in run_agent.py.
-            await asyncio.to_thread(_run_session_via_aiagent, wake_prompt)
+            import time as _time
+            _session_deadline = _time.monotonic() + _MODAL_TIMEOUT_SECS
+            await asyncio.to_thread(
+                _run_session_via_aiagent, wake_prompt, _session_deadline
+            )
     except DarwinHibernateSignal as sig:
         await _execute_hibernation(
             sig, hermes_home, darwin_id, session_id, agent_jwt, backend_url
@@ -186,7 +207,35 @@ async def _run_agent_async(
         await DARWIN_STATE_VOLUME.commit.aio()
 
 
-def _run_session_via_aiagent(user_message: str) -> None:
+_HIBERNATE_NUDGE = (
+    "You stopped without calling hibernate(). "
+    "A text-only response means zero work was completed this turn. "
+    "Resume your mission immediately — call the next tool right now. "
+    "The only valid way to end a session is: "
+    "hibernate(reason=..., wake_after_hours=N)  OR  hibernate(wake_on_webhook=key). "
+    "If you are genuinely waiting for something external, hibernate now. "
+    "If you have more work to do, call the next tool."
+)
+
+# Injected when the container is approaching its wall-clock timeout.
+_DEADLINE_NUDGE_TEMPLATE = (
+    "URGENT — this container will be forcibly killed by the cloud provider in "
+    "approximately {remaining_secs:.0f} seconds. "
+    "You MUST call hibernate() right now to save your state and schedule a "
+    "continuation. Pass wake_after_hours=0.02 (about 1 minute) if you want to "
+    "resume immediately. If you do not call hibernate, all progress will be lost "
+    "and you will not wake up automatically."
+)
+
+# How many seconds before the container deadline to fire the deadline nudge.
+_DEADLINE_WARN_SECS = 120
+
+# Max number of 'you forgot to hibernate' nudges before giving up.
+# The Modal timeout is the ultimate safety valve.
+_MAX_CONTINUATIONS = 15
+
+
+def _run_session_via_aiagent(user_message: str, deadline: float | None = None) -> None:
     """
     Hermes compatibility path for new submodule versions where
     ``hermes_agent.python_library.run_session`` no longer exists.
@@ -195,8 +244,13 @@ def _run_session_via_aiagent(user_message: str) -> None:
     discards the routed default model when constructing the HTTP client, which
     yields OpenRouter ``400 No models provided``. We therefore pass explicit
     ``provider``, ``model``, and ``max_tokens`` from rendered ``config.yaml`` (with optional
-    ``OPENROUTER_*`` env overrides). A bounded ``max_tokens`` avoids OpenRouter HTTP 402 when
-    the provider reserves spend against a huge completion budget.
+    ``OPENROUTER_*`` env overrides). Set ``max_tokens`` high enough so tool calls
+    are never truncated (finish_reason='length') — 8192 is the safe default for Sonnet.
+
+    The agent is expected to run until it calls hibernate() (which raises
+    DarwinHibernateSignal). If run_conversation returns normally (finish_reason=stop),
+    we inject a continuation nudge and call run_conversation again — up to
+    _MAX_CONTINUATIONS times. The Modal 900s timeout is the hard ceiling.
     """
     from run_agent import AIAgent  # type: ignore[import-not-found]
 
@@ -205,7 +259,7 @@ def _run_session_via_aiagent(user_message: str) -> None:
     model_id = (
         (os.environ.get("OPENROUTER_MODEL") or "").strip()
         or (os.environ.get("OPENROUTER_DEFAULT_MODEL") or "").strip()
-        or "anthropic/claude-haiku-4.5"
+        or "anthropic/claude-sonnet-4.5"
     )
     max_iterations = 90
     max_tokens = None
@@ -240,7 +294,7 @@ def _run_session_via_aiagent(user_message: str) -> None:
     if env_mt:
         max_tokens = int(env_mt)
     if max_tokens is None:
-        max_tokens = 4096
+        max_tokens = 8192
 
     _verbose = (os.environ.get("DARWIN_HERMES_VERBOSE") or "").strip().lower() in (
         "1",
@@ -265,23 +319,76 @@ def _run_session_via_aiagent(user_message: str) -> None:
         max_tokens=max_tokens,
         quiet_mode=not _verbose,
     )
-    try:
-        result = agent.run_conversation(user_message)
-    except Exception:
-        log.exception("run_conversation raised — see traceback below")
-        raise
 
-    preview = (result.get("final_response") or "")[:200].replace("\n", " ")
-    log.info(
-        "run_conversation finished api_calls=%s completed=%s turn_exit=%s "
-        "session_tokens=%s/%s preview=%r",
-        result.get("api_calls"),
-        result.get("completed"),
-        result.get("turn_exit_reason"),
-        result.get("input_tokens"),
-        result.get("output_tokens"),
-        preview,
-    )
+    import time as _time
+
+    # Loop until hibernate() raises DarwinHibernateSignal or the Modal timeout fires.
+    # Each normal return (finish_reason=stop without hibernate) gets a nudge.
+    msg = user_message
+    for continuation in range(_MAX_CONTINUATIONS + 1):
+        # --- Deadline guard: fire before Modal hard-kills the container ---
+        if deadline is not None:
+            remaining = deadline - _time.monotonic()
+            if remaining <= _DEADLINE_WARN_SECS:
+                nudge = _DEADLINE_NUDGE_TEMPLATE.format(remaining_secs=remaining)
+                log.warning(
+                    "Approaching container deadline (%.0fs remaining) — injecting deadline nudge",
+                    remaining,
+                )
+                try:
+                    agent.run_conversation(nudge)
+                except Exception:
+                    pass  # DarwinHibernateSignal or other — propagate below
+                return  # If the agent still didn't hibernate, let Modal kill cleanly
+
+        try:
+            result = agent.run_conversation(msg)
+        except Exception:
+            log.exception("run_conversation raised — see traceback below")
+            raise
+
+        preview = (result.get("final_response") or "")[:200].replace("\n", " ")
+        final_response = str(result.get("final_response") or "")
+        log.info(
+            "run_conversation finished api_calls=%s completed=%s turn_exit=%s "
+            "session_tokens=%s/%s continuation=%d preview=%r",
+            result.get("api_calls"),
+            result.get("completed"),
+            result.get("turn_exit_reason"),
+            result.get("input_tokens"),
+            result.get("output_tokens"),
+            continuation,
+            preview,
+        )
+
+        # Provider/billing hard-fail: do not keep nudging forever.
+        # Example: OpenRouter HTTP 402 "Insufficient credits".
+        provider_blockers = (
+            "HTTP 402",
+            "Insufficient credits",
+            "Rate limited after 2 retries",
+            "Max retries (2) exhausted",
+        )
+        if any(tok in final_response for tok in provider_blockers):
+            log.error(
+                "Stopping session after provider hard-fail (no continuation nudge): %s",
+                preview,
+            )
+            return
+
+        if continuation >= _MAX_CONTINUATIONS:
+            log.warning(
+                "Reached max continuations (%d) without hibernate — exiting session.",
+                _MAX_CONTINUATIONS,
+            )
+            return
+
+        log.warning(
+            "run_conversation returned without hibernate (continuation %d/%d) — nudging agent",
+            continuation + 1,
+            _MAX_CONTINUATIONS,
+        )
+        msg = _HIBERNATE_NUDGE
 
 
 async def _render_config(

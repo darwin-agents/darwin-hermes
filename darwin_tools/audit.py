@@ -11,6 +11,8 @@ audit-log entries that require a structured payload.
 
 from __future__ import annotations
 
+import json
+
 
 def register_audit_tools(ctx) -> None:
     ctx.register_tool(
@@ -51,7 +53,7 @@ _schema_log_decision = {
 }
 
 
-async def _handle_log_decision(params: dict, **kwargs) -> dict:
+async def _handle_log_decision(params: dict, **kwargs) -> str:
     from .backend_client import get_backend_client
     client = get_backend_client()
 
@@ -63,4 +65,4 @@ async def _handle_log_decision(params: dict, **kwargs) -> dict:
         "prompt_snapshot": params.get("prompt_snapshot"),
         "context_snapshot": {"session_id": client.session_id},
     })
-    return {"logged": True}
+    return json.dumps({"logged": True})

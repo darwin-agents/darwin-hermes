@@ -14,6 +14,8 @@ ask_human is NOT here — we use Hermes' built-in `clarify` tool.
 
 from __future__ import annotations
 
+import json
+
 
 class DarwinHibernateSignal(BaseException):
     """Raised by hibernate() — caught by modal_app.py for clean shutdown.
@@ -130,7 +132,7 @@ _schema_request_approval = {
 }
 
 
-async def _handle_request_approval(params: dict, **kwargs) -> dict:
+async def _handle_request_approval(params: dict, **kwargs) -> str:
     """
     Returns: { "webhook_key": str }
     The agent must immediately call hibernate(wake_on_webhook=webhook_key).
@@ -155,4 +157,4 @@ async def _handle_request_approval(params: dict, **kwargs) -> dict:
         "options": ["Approve", "Deny"],
         "webhook_key": webhook_key,
     })
-    return {"webhook_key": webhook_key}
+    return json.dumps({"webhook_key": webhook_key})

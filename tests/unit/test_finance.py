@@ -27,13 +27,13 @@ def tools(ctx):
 @pytest.mark.asyncio
 async def test_check_ledger_accepts_registry_dispatch_kwargs(tools, backend_mock):
     """Hermes calls ``handler(args, task_id=..., user_task=...)``."""
-    result = await tools["check_ledger"]({}, task_id="task-1", user_task=None)
+    result = json.loads(await tools["check_ledger"]({}, task_id="task-1", user_task=None))
     assert result["balance"] == 80.00
 
 
 @pytest.mark.asyncio
 async def test_check_ledger_returns_correct_shape(tools, backend_mock):
-    result = await tools["check_ledger"]({})
+    result = json.loads(await tools["check_ledger"]({}))
     assert result["balance"] == 80.00
     assert result["initial_budget"] == 100.00
     assert result["pct_remaining"] == 80.0
@@ -49,7 +49,7 @@ async def test_check_ledger_pct_remaining(tools, backend_mock):
             "transactions": [],
         })
     )
-    result = await tools["check_ledger"]({})
+    result = json.loads(await tools["check_ledger"]({}))
     assert result["pct_remaining"] == 33.3
 
 
@@ -87,16 +87,16 @@ async def test_record_expense_negates_already_negative(tools, backend_mock):
 
 @pytest.mark.asyncio
 async def test_inject_payment_response_no_pan(tools, backend_mock):
-    result = await tools["inject_payment"]({
+    result = json.loads(await tools["inject_payment"]({
         "browserbase_session_id": "bb_1",
         "merchant_name": "TestShop",
         "amount": 29.99,
         "pan_element": "#card",
         "cvv_element": "#cvv",
         "expiry_element": "#expiry",
-    })
+    }))
     assert result.get("injected") is True
-    result_str = str(result)
+    result_str = json.dumps(result)
     import re
     assert not re.search(r"\b\d{13,19}\b", result_str), "PAN found in result"
 
@@ -135,7 +135,7 @@ async def test_check_ledger_zero_budget_no_crash(tools, backend_mock):
             "transactions": [],
         })
     )
-    result = await tools["check_ledger"]({})
+    result = json.loads(await tools["check_ledger"]({}))
     assert result["pct_remaining"] == 0.0
     assert result["balance"] == 0.0
 
@@ -154,14 +154,14 @@ async def test_inject_payment_rejects_insufficient_balance(tools, backend_mock):
             "transactions": [],
         })
     )
-    result = await tools["inject_payment"]({
+    result = json.loads(await tools["inject_payment"]({
         "browserbase_session_id": "bb_3",
         "merchant_name": "ExpensiveShop",
         "amount": 50.00,
         "pan_element": "#p",
         "cvv_element": "#c",
         "expiry_element": "#e",
-    })
+    }))
     assert result["error"] == "INSUFFICIENT_BALANCE"
     assert "50.00" in result["message"]
 
