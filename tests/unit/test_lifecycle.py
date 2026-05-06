@@ -24,6 +24,29 @@ def tools(ctx):
 # DarwinHibernateSignal construction
 # ---------------------------------------------------------------------------
 
+def test_signal_is_base_exception_not_exception():
+    """DarwinHibernateSignal must NOT be caught by bare ``except Exception`` handlers
+    (e.g. tools/registry.py dispatch).  It is a control-flow signal, not an error."""
+    sig = DarwinHibernateSignal(reason="idle")
+    assert isinstance(sig, BaseException)
+    assert not isinstance(sig, Exception), (
+        "DarwinHibernateSignal must inherit from BaseException, not Exception, "
+        "so broad except-Exception handlers in the tool registry do not swallow it"
+    )
+
+
+def test_signal_not_swallowed_by_except_exception():
+    """Simulate the registry dispatch pattern — signal must escape."""
+    def registry_dispatch():
+        try:
+            raise DarwinHibernateSignal(reason="hibernating")
+        except Exception:
+            return "swallowed"   # this must NOT happen
+
+    with pytest.raises(DarwinHibernateSignal):
+        registry_dispatch()
+
+
 def test_signal_stores_fields():
     sig = DarwinHibernateSignal(
         reason="waiting for stripe",

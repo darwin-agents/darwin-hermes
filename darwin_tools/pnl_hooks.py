@@ -27,6 +27,14 @@ import uuid
 
 log = logging.getLogger(__name__)
 
+try:
+    # `hermes-core` pricing helper: OpenRouter models API lookup + cache.
+    from agent.usage_pricing import CanonicalUsage as _CanonicalUsage
+    from agent.usage_pricing import estimate_usage_cost as _estimate_usage_cost
+except Exception:  # pragma: no cover - runtime fallback when hermes import is unavailable
+    _CanonicalUsage = None
+    _estimate_usage_cost = None
+
 _session_start: float | None = None
 _token_running_total = 0
 _cost_running_total = 0.0
@@ -73,7 +81,7 @@ def _pre_llm_call(**kwargs):
 
 
 def _resolve_post_llm_cost_usd(model: str, usage: dict) -> float:
-    """Prefer OpenRouter/Hermes ``billed_cost_usd``, then raw ``cost``, else LiteLLM."""
+    """Prefer billed provider USD, then OpenRouter pricing estimate."""
     if "billed_cost_usd" in usage:
         try:
             return max(0.0, float(usage["billed_cost_usd"]))
@@ -317,22 +325,56 @@ def _estimate_cost(
     cache_read_tokens: int = 0,
 ) -> float:
     """
-    Resolve per-token pricing from LiteLLM's bundled model_cost.json.
-    LiteLLM updates its price table with each release — no hardcoded rates here.
-    Returns 0.0 for unknown models rather than silently using a wrong default.
+    Estimate cost using the `hermes-core` pricing helper (`usage_pricing.py`).
+
+    Order:
+      1) Use ``hermes-core/agent/usage_pricing.py`` (OpenRouter models API + cache)
+      2) Return 0.0 when pricing is unknown/unavailable
     """
     try:
-        import litellm
-        prompt_cost, completion_cost = litellm.cost_per_token(
+        estimated = _estimate_cost_openrouter(
             model=model,
-            prompt_tokens=input_tokens,
-            completion_tokens=output_tokens,
-            cache_read_input_tokens=cache_read_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
         )
-        return prompt_cost + completion_cost
+        if estimated is not None:
+            return estimated
     except Exception:
-        log.warning("Could not resolve cost for model %r — reporting $0.00", model)
-        return 0.0
+        pass
+    log.warning("Could not resolve cost for model %r — reporting $0.00", model)
+    return 0.0
+
+
+def _estimate_cost_openrouter(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+) -> float | None:
+    """Return estimated USD from OpenRouter pricing metadata, else ``None``."""
+    if _estimate_usage_cost is None or _CanonicalUsage is None:
+        return None
+
+    usage = _CanonicalUsage(
+        input_tokens=max(0, int(input_tokens or 0)),
+        output_tokens=max(0, int(output_tokens or 0)),
+        cache_read_tokens=max(0, int(cache_read_tokens or 0)),
+    )
+    base_url = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+
+    result = _estimate_usage_cost(
+        model,
+        usage,
+        provider="openrouter",
+        base_url=base_url,
+        api_key=api_key,
+    )
+    amount = getattr(result, "amount_usd", None)
+    if amount is None:
+        return None
+    return max(0.0, float(amount))
 
 
 def _redact(args: dict) -> str:

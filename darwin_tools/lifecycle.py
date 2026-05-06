@@ -15,8 +15,13 @@ ask_human is NOT here — we use Hermes' built-in `clarify` tool.
 from __future__ import annotations
 
 
-class DarwinHibernateSignal(Exception):
-    """Raised by hibernate() — caught by modal_app.py for clean shutdown."""
+class DarwinHibernateSignal(BaseException):
+    """Raised by hibernate() — caught by modal_app.py for clean shutdown.
+
+    Inherits from ``BaseException`` (not ``Exception``) so broad
+    ``except Exception`` handlers in the tool registry / Hermes dispatch
+    loop do not swallow it accidentally.
+    """
 
     def __init__(
         self,

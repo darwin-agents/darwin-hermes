@@ -11,8 +11,11 @@ Invariants:
 """
 
 import json
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
+import darwin_tools.pnl_hooks as pnl_hooks
 from darwin_tools.pnl_hooks import (
     _estimate_cost,
     _extract_response_text,
@@ -50,19 +53,104 @@ def test_redact_strips_jwt():
 
 
 def test_estimate_cost_known_model_returns_positive_cost():
-    cost = _estimate_cost("claude-haiku-4-5-20251001", 1000, 200)
-    # LiteLLM resolves the price from its bundled model_cost.json.
-    # If this exact model id is not in LiteLLM's table it gracefully returns 0.0.
-    # Either way the result must be non-negative and well below $0.01 for ~1200 tokens.
-    assert cost >= 0.0
-    assert cost < 0.01
+    class FakeCanonicalUsage:
+        def __init__(self, input_tokens, output_tokens, cache_read_tokens):
+            self.input_tokens = input_tokens
+            self.output_tokens = output_tokens
+            self.cache_read_tokens = cache_read_tokens
+
+    def fake_estimate_usage_cost(model, usage, **kwargs):
+        assert model == "claude-haiku-4-5-20251001"
+        assert usage.input_tokens == 1000
+        assert usage.output_tokens == 200
+        return SimpleNamespace(amount_usd=Decimal("0.0018"))
+
+    original = pnl_hooks._estimate_usage_cost
+    original_usage = pnl_hooks._CanonicalUsage
+    try:
+        pnl_hooks._CanonicalUsage = FakeCanonicalUsage
+        pnl_hooks._estimate_usage_cost = fake_estimate_usage_cost
+        cost = _estimate_cost("claude-haiku-4-5-20251001", 1000, 200)
+    finally:
+        pnl_hooks._estimate_usage_cost = original
+        pnl_hooks._CanonicalUsage = original_usage
+    assert cost == 0.0018
 
 
 def test_estimate_cost_unknown_model_returns_zero():
-    # LiteLLM raises on an unrecognised model id; we surface that as 0.0
-    # so an unexpected neuron model never crashes the telemetry pipeline.
-    cost = _estimate_cost("totally-unknown-model-xyz", 1000, 200)
+    # Unknown pricing should safely degrade to 0.0.
+    class FakeCanonicalUsage:
+        def __init__(self, input_tokens, output_tokens, cache_read_tokens):
+            self.input_tokens = input_tokens
+            self.output_tokens = output_tokens
+            self.cache_read_tokens = cache_read_tokens
+
+    def fake_estimate_usage_cost(*args, **kwargs):
+        return SimpleNamespace(amount_usd=None)
+
+    original = pnl_hooks._estimate_usage_cost
+    original_usage = pnl_hooks._CanonicalUsage
+    try:
+        pnl_hooks._CanonicalUsage = FakeCanonicalUsage
+        pnl_hooks._estimate_usage_cost = fake_estimate_usage_cost
+        cost = _estimate_cost("totally-unknown-model-xyz", 1000, 200)
+    finally:
+        pnl_hooks._estimate_usage_cost = original
+        pnl_hooks._CanonicalUsage = original_usage
     assert cost == 0.0
+
+
+def test_estimate_cost_openrouter_prefix_stripped():
+    # OpenRouter slug should be passed as-is to Hermes/OpenRouter estimator.
+    captured = {}
+    class FakeCanonicalUsage:
+        def __init__(self, input_tokens, output_tokens, cache_read_tokens):
+            self.input_tokens = input_tokens
+            self.output_tokens = output_tokens
+            self.cache_read_tokens = cache_read_tokens
+
+    def fake_estimate_usage_cost(model, usage, **kwargs):
+        captured["model"] = model
+        return SimpleNamespace(amount_usd=Decimal("0.00042"))
+
+    original = pnl_hooks._estimate_usage_cost
+    original_usage = pnl_hooks._CanonicalUsage
+    try:
+        pnl_hooks._CanonicalUsage = FakeCanonicalUsage
+        pnl_hooks._estimate_usage_cost = fake_estimate_usage_cost
+        cost = _estimate_cost("anthropic/claude-haiku-4.5", 1000, 200)
+    finally:
+        pnl_hooks._estimate_usage_cost = original
+        pnl_hooks._CanonicalUsage = original_usage
+    assert captured["model"] == "anthropic/claude-haiku-4.5"
+    assert cost == 0.00042
+
+
+def test_estimate_cost_openrouter_prefix_no_warning(caplog):
+    import logging
+    class FakeCanonicalUsage:
+        def __init__(self, input_tokens, output_tokens, cache_read_tokens):
+            self.input_tokens = input_tokens
+            self.output_tokens = output_tokens
+            self.cache_read_tokens = cache_read_tokens
+
+    def fake_estimate_usage_cost(*args, **kwargs):
+        return SimpleNamespace(amount_usd=Decimal("0.00011"))
+
+    original = pnl_hooks._estimate_usage_cost
+    original_usage = pnl_hooks._CanonicalUsage
+    with caplog.at_level(logging.WARNING, logger="darwin_tools.pnl_hooks"):
+        try:
+            pnl_hooks._CanonicalUsage = FakeCanonicalUsage
+            pnl_hooks._estimate_usage_cost = fake_estimate_usage_cost
+            _estimate_cost("anthropic/claude-haiku-4.5", 1000, 200)
+        finally:
+            pnl_hooks._estimate_usage_cost = original
+            pnl_hooks._CanonicalUsage = original_usage
+    # The "Could not resolve cost" warning must NOT fire for a known model
+    # accessed via its OpenRouter-prefixed slug.
+    resolve_warnings = [r for r in caplog.records if "Could not resolve cost" in r.message]
+    assert resolve_warnings == [], f"Unexpected warning: {[r.message for r in resolve_warnings]}"
 
 
 def test_hooks_registered(ctx):

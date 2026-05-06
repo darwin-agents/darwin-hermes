@@ -27,6 +27,7 @@ from .comms import register_comms_tools
 from .audit import register_audit_tools
 from .entities import register_entities_tools
 from .pnl_hooks import register_pnl_hooks
+from . import hermes_patches
 
 __all__ = ["register", "HermesPluginContext"]
 
@@ -60,6 +61,9 @@ def register(ctx: HermesPluginContext) -> None:
             f"darwin_tools plugin: missing required env vars: {', '.join(missing)}. "
             f"Ensure modal_app.py sets them before Hermes calls register()."
         )
+
+    # Apply hermes-core runtime patches before any LLM calls
+    hermes_patches.apply_all()
 
     register_finance_tools(ctx)
     register_lifecycle_tools(ctx)
